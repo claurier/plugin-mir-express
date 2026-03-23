@@ -10,13 +10,29 @@
  * Renders a scrolling peak-hold waveform (min/max per pixel column) in the
  * top quarter of the plugin window.
  *
- * - Driven by a juce::Timer at ~30 fps.
- * - Drains the processor's waveformFifo on the message thread.
- * - Stores one min/max pair per pixel column; oldest column is on the left,
- *   newest (current instant) is on the right.
+ * Rendering strategy — Timer + offscreen image circular buffer:
+ *
+ *   A 60 Hz Timer drives updates entirely on the message thread:
+ *     1. drainFifo()  — consumes all pending samples from the processor's
+ *                       lock-free AbstractFifo, accumulates min/max, and once
+ *                       a column is complete draws it directly into waveformImage
+ *                       at writeColumn, then advances writeColumn.
+ *     2. repaint()    — called only when at least one new column was written,
+ *                       keeping CPU use proportional to actual audio activity.
+ *
+ *   Inside paint() (message thread):
+ *     The image is composited in two halves to implement the circular-buffer
+ *     scroll with no pixel shifting at all.
+ *
+ *   Thread safety:
+ *     - waveformImage is only ever touched on the message thread (timer +
+ *       paint), so no additional locking is required.
+ *     - The AbstractFifo is single-producer (audio thread) / single-consumer
+ *       (message thread via timer), which is exactly its designed use case.
+ *     - resized() is also on the message thread, so resetColumns() is safe.
  */
 class WaveformDisplay final : public juce::Component,
-                               private juce::Timer
+                              private juce::Timer
 {
 public:
     explicit WaveformDisplay (MirExpressAudioProcessor& processor);
@@ -32,19 +48,20 @@ private:
 
     MirExpressAudioProcessor& processor;
 
-    // One min/max pair per horizontal pixel column.
-    int   numColumns      = 0;
-    int   writeColumn     = 0;          ///< Index of the next column to be written
-    std::vector<float> colMin, colMax;
+    // Offscreen image acting as a circular column buffer.
+    juce::Image waveformImage;
+    int   numColumns       = 0;
+    int   writeColumn      = 0;  ///< Next column to be overwritten in waveformImage
+    int   newColumnsReady  = 0;  ///< Columns written since last repaint; repaint only if > 0
 
-    // Sample accumulation state for the column currently being filled.
-    float runningMin      = 0.0f;
-    float runningMax      = 0.0f;
-    int   samplesInColumn = 0;
-    int   samplesPerColumn = 1;         ///< Recomputed whenever sample rate / size changes
+    // Sample accumulation for the column currently being filled.
+    float runningMin       = 0.0f;
+    float runningMax       = 0.0f;
+    int   samplesInColumn  = 0;
+    int   samplesPerColumn = 1;  ///< Recomputed whenever sample rate / column count changes
 
     static constexpr double kDisplaySeconds = 3.0;
-    static constexpr int    kTimerHz        = 30;
+    static constexpr int    kTimerHz        = 60;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WaveformDisplay)
 };

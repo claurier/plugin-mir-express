@@ -18,39 +18,46 @@ WaveformDisplay::~WaveformDisplay()
 //==============================================================================
 void WaveformDisplay::resized()
 {
+    // Safe to call directly: resized() runs on the message thread, and paint()
+    // (GL thread) holds the MM lock while executing, so the two are mutually
+    // exclusive — no concurrent access to waveformImage is possible.
     resetColumns (getWidth());
 }
 
 void WaveformDisplay::resetColumns (int newNumColumns)
 {
     numColumns = juce::jmax (1, newNumColumns);
+    const int height = juce::jmax (1, getHeight());
 
-    colMin.assign (static_cast<size_t> (numColumns), 0.0f);
-    colMax.assign (static_cast<size_t> (numColumns), 0.0f);
+    waveformImage = juce::Image (juce::Image::ARGB, numColumns, height, true);
+    juce::Graphics g (waveformImage);
+    g.fillAll (juce::Colours::black);
 
-    writeColumn     = 0;
-    runningMin      = 0.0f;
-    runningMax      = 0.0f;
+    writeColumn    = 0;
+    runningMin     = 0.0f;
+    runningMax     = 0.0f;
     samplesInColumn = 0;
 }
 
 //==============================================================================
 void WaveformDisplay::timerCallback()
 {
+    newColumnsReady = 0;
     drainFifo();
-    repaint();
+    if (newColumnsReady > 0)
+        repaint();
 }
 
+//==============================================================================
 void WaveformDisplay::drainFifo()
 {
-    if (numColumns <= 0)
+    if (numColumns <= 0 || !waveformImage.isValid())
         return;
 
     const double sr = processor.getSampleRate();
     if (sr < 1.0)
         return;
 
-    // Recompute samples-per-column if sample rate or column count changed.
     const int newSamplesPerColumn =
         juce::jmax (1, static_cast<int> (sr * kDisplaySeconds / numColumns));
 
@@ -62,11 +69,18 @@ void WaveformDisplay::drainFifo()
         samplesInColumn  = 0;
     }
 
-    auto& fifo   = processor.waveformFifo;
+    auto& fifo      = processor.waveformFifo;
     const auto& buf = processor.waveformBuffer;
 
+    const int numReady = fifo.getNumReady();
+    if (numReady == 0)
+        return;
+
+    juce::Graphics ig (waveformImage);
+    const float imgH = static_cast<float> (waveformImage.getHeight());
+
     int start1, size1, start2, size2;
-    fifo.prepareToRead (fifo.getNumReady(), start1, size1, start2, size2);
+    fifo.prepareToRead (numReady, start1, size1, start2, size2);
 
     auto pushSample = [&] (float s)
     {
@@ -75,12 +89,21 @@ void WaveformDisplay::drainFifo()
 
         if (++samplesInColumn >= samplesPerColumn)
         {
-            colMin[static_cast<size_t> (writeColumn)] = runningMin;
-            colMax[static_cast<size_t> (writeColumn)] = runningMax;
+            ig.setColour (juce::Colours::black);
+            ig.fillRect (writeColumn, 0, 1, (int) imgH);
+
+            const float yMin = juce::jmap (runningMin, -1.0f, 1.0f, imgH, 0.0f);
+            const float yMax = juce::jmap (runningMax, -1.0f, 1.0f, imgH, 0.0f);
+            ig.setColour (juce::Colours::white);
+            ig.drawVerticalLine (writeColumn,
+                                 juce::jmin (yMin, yMax),
+                                 juce::jmax (yMin, yMax));
+
             writeColumn     = (writeColumn + 1) % numColumns;
             runningMin      = 0.0f;
             runningMax      = 0.0f;
             samplesInColumn = 0;
+            ++newColumnsReady;
         }
     };
 
@@ -95,39 +118,33 @@ void WaveformDisplay::drainFifo()
 //==============================================================================
 void WaveformDisplay::paint (juce::Graphics& g)
 {
-    const auto bounds = getLocalBounds().toFloat();
-
-    g.fillAll (juce::Colours::black);
-
-    if (numColumns <= 0)
-        return;
-
-    // ── Zero / centre line ────────────────────────────────────────────────
-    const float midY = bounds.getCentreY();
-    g.setColour (juce::Colour (0xff303030));
-    g.drawHorizontalLine (juce::roundToInt (midY), bounds.getX(), bounds.getRight());
-
-    // ── Waveform columns ──────────────────────────────────────────────────
-    // We iterate from oldest column (writeColumn) to newest (writeColumn - 1),
-    // mapping to screen x left → right.
-    g.setColour (juce::Colours::white);
-
-    for (int col = 0; col < numColumns; ++col)
+    if (!waveformImage.isValid() || numColumns <= 0)
     {
-        const int bufIdx = (writeColumn + col) % numColumns;
-
-        const float yMin = juce::jmap (colMin[static_cast<size_t> (bufIdx)],
-                                       -1.0f, 1.0f,
-                                       bounds.getBottom(), bounds.getY());
-        const float yMax = juce::jmap (colMax[static_cast<size_t> (bufIdx)],
-                                       -1.0f, 1.0f,
-                                       bounds.getBottom(), bounds.getY());
-
-        // drawVerticalLine expects (x, top, bottom) where top <= bottom.
-        g.drawVerticalLine (col,
-                            juce::jmin (yMin, yMax),
-                            juce::jmax (yMin, yMax));
+        g.fillAll (juce::Colours::black);
+        return;
     }
+
+    const int w = getWidth();
+    const int h = getHeight();
+
+    // Blit the circular image buffer in two halves:
+    //   [writeColumn … end]  → left side of screen  (oldest data)
+    //   [0 … writeColumn-1]  → right side of screen (newest data)
+    const int rightWidth = numColumns - writeColumn;
+
+    if (rightWidth > 0)
+        g.drawImage (waveformImage,
+                     0,           0, rightWidth,  h,
+                     writeColumn, 0, rightWidth,  h);
+
+    if (writeColumn > 0)
+        g.drawImage (waveformImage,
+                     rightWidth, 0, writeColumn, h,
+                     0,          0, writeColumn, h);
+
+    // Zero line drawn on top.
+    g.setColour (juce::Colour (0xff303030));
+    g.drawHorizontalLine (h / 2, 0.0f, static_cast<float> (w));
 }
 
 //==============================================================================
@@ -145,7 +162,6 @@ MirExpressAudioProcessorEditor::MirExpressAudioProcessorEditor (MirExpressAudioP
 
 MirExpressAudioProcessorEditor::~MirExpressAudioProcessorEditor() = default;
 
-//==============================================================================
 void MirExpressAudioProcessorEditor::paint (juce::Graphics& g)
 {
     g.fillAll (juce::Colour (0xff1a1a1a));
