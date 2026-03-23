@@ -7,14 +7,18 @@ MirExpressAudioProcessor::MirExpressAudioProcessor()
         .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
         .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
 {
+    // Each display column averages 256 audio samples; 1024 columns are kept,
+    // giving roughly 6 s of history at 44.1 kHz (1024 * 256 / 44100 ≈ 5.9 s).
+    visualiser.setSamplesPerBlock (256);
+    visualiser.setBufferSize (1024);
 }
 
 MirExpressAudioProcessor::~MirExpressAudioProcessor() = default;
 
 //==============================================================================
-const juce::String MirExpressAudioProcessor::getName() const       { return JucePlugin_Name; }
-bool  MirExpressAudioProcessor::acceptsMidi() const                 { return false; }
-bool  MirExpressAudioProcessor::producesMidi() const                { return false; }
+const juce::String MirExpressAudioProcessor::getName() const      { return JucePlugin_Name; }
+bool  MirExpressAudioProcessor::acceptsMidi() const                { return false; }
+bool  MirExpressAudioProcessor::producesMidi() const               { return false; }
 bool  MirExpressAudioProcessor::isMidiEffect() const               { return false; }
 double MirExpressAudioProcessor::getTailLengthSeconds() const      { return 0.0; }
 int   MirExpressAudioProcessor::getNumPrograms()                   { return 1; }
@@ -26,8 +30,7 @@ void  MirExpressAudioProcessor::changeProgramName (int, const juce::String&) {}
 //==============================================================================
 void MirExpressAudioProcessor::prepareToPlay (double /*sampleRate*/, int /*samplesPerBlock*/)
 {
-    // Reset the FIFO when the session restarts.
-    waveformFifo.reset();
+    visualiser.clear();
 }
 
 void MirExpressAudioProcessor::releaseResources() {}
@@ -38,43 +41,10 @@ void MirExpressAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 {
     juce::ScopedNoDenormals noDenormals;
 
-    const int numSamples  = buffer.getNumSamples();
-    const int numChannels = buffer.getNumChannels();
+    // Feed the visualiser (thread-safe; pushBuffer is audio-thread safe).
+    visualiser.pushBuffer (buffer);
 
-    // ── Push mono-mixed samples to the waveform FIFO ──────────────────────
-    // We only push as many samples as the FIFO has free space for; if the UI
-    // thread is slow we drop the oldest data rather than blocking.
-    if (numChannels > 0)
-    {
-        const int toWrite = juce::jmin (numSamples, waveformFifo.getFreeSpace());
-
-        if (toWrite > 0)
-        {
-            int start1, size1, start2, size2;
-            waveformFifo.prepareToWrite (toWrite, start1, size1, start2, size2);
-
-            const float channelScale = 1.0f / static_cast<float> (numChannels);
-
-            for (int i = 0; i < size1; ++i)
-            {
-                float sum = 0.0f;
-                for (int ch = 0; ch < numChannels; ++ch)
-                    sum += buffer.getSample (ch, i);
-                waveformBuffer[static_cast<size_t> (start1 + i)] = sum * channelScale;
-            }
-            for (int i = 0; i < size2; ++i)
-            {
-                float sum = 0.0f;
-                for (int ch = 0; ch < numChannels; ++ch)
-                    sum += buffer.getSample (ch, size1 + i);
-                waveformBuffer[static_cast<size_t> (start2 + i)] = sum * channelScale;
-            }
-
-            waveformFifo.finishedWrite (size1 + size2);
-        }
-    }
-
-    // ── Bypass: audio passes through unchanged ────────────────────────────
+    // Bypass: audio passes through unchanged.
 }
 
 //==============================================================================

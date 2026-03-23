@@ -6,12 +6,11 @@
 /**
  * MirExpressAudioProcessor
  *
- * A bypass audio effect that exposes a lock-free FIFO so the UI thread can
- * read audio samples for the scrolling waveform display.
+ * A bypass audio effect. Audio data is forwarded to an AudioVisualiserComponent
+ * so the editor can display a live scrolling waveform.
  *
- * Thread-safety contract:
- *   - processBlock()   writes to waveformFifo  (audio thread, single producer)
- *   - WaveformDisplay  reads from waveformFifo (message thread, single consumer)
+ * AudioVisualiserComponent is thread-safe: pushBuffer() can be called from the
+ * audio thread while the component repaints on the message thread.
  */
 class MirExpressAudioProcessor final : public juce::AudioProcessor
 {
@@ -29,9 +28,9 @@ public:
     bool hasEditor() const override;
 
     const juce::String getName() const override;
-    bool  acceptsMidi() const override;
-    bool  producesMidi() const override;
-    bool  isMidiEffect() const override;
+    bool   acceptsMidi() const override;
+    bool   producesMidi() const override;
+    bool   isMidiEffect() const override;
     double getTailLengthSeconds() const override;
 
     int  getNumPrograms() override;
@@ -44,12 +43,8 @@ public:
     void setStateInformation (const void* data, int sizeInBytes) override;
 
     //==========================================================================
-    // Waveform FIFO — consumed by WaveformDisplay on the message thread.
-    // Sized for 3 s at the maximum expected sample rate (192 kHz).
-    static constexpr int kWaveformFifoSize = 3 * 192000;
-
-    juce::AbstractFifo          waveformFifo  { kWaveformFifoSize };
-    std::array<float, kWaveformFifoSize> waveformBuffer {};
+    // Waveform visualiser — fed from the audio thread, rendered by the editor.
+    juce::AudioVisualiserComponent visualiser { 2 };  // 2 channels (stereo)
 
 private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MirExpressAudioProcessor)
