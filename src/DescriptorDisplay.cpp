@@ -52,6 +52,35 @@ void DescriptorDisplay::timerCallback()
     // BTrack BPM: snap directly (continuous estimate).
     displayBTrackBPM = analyser.getBTrackBPM();
 
+    // beat_this: snap BPM, then compute continuous beat flash via BPM extrapolation.
+    // Since beat_this is batch (runs every ~4 s), we phase-lock to the last detected
+    // beat and let fmod() produce a regular metronome flash between analysis runs.
+    displayBeatThisBPM      = analyser.getBeatThisBPM();
+    displayBeatThisLastBeat = analyser.getBeatThisLastBeat();
+    if (displayBeatThisBPM > 0.0f && displayBeatThisLastBeat > -1.0e8)
+    {
+        const double periodMs  = 60000.0 / static_cast<double> (displayBeatThisBPM);
+        const double nowMs     = juce::Time::getMillisecondCounterHiRes();
+        const double elapsed   = nowMs - displayBeatThisLastBeat;
+        if (elapsed >= 0.0)
+        {
+            // Phase within the current beat period: 0 = on beat, periodMs = next beat.
+            const double phase = std::fmod (elapsed, periodMs);
+            constexpr double kFlashMs = 100.0;  // visible for 100 ms after each beat
+            displayBeatThisBeat = (phase < kFlashMs)
+                                  ? static_cast<float> (1.0 - phase / kFlashMs)
+                                  : 0.0f;
+        }
+        else
+        {
+            displayBeatThisBeat = 0.0f;
+        }
+    }
+    else
+    {
+        displayBeatThisBeat = 0.0f;
+    }
+
     // Beat flash: compute fade intensity from time elapsed since last beat.
     // The beat timestamp is back-dated to the actual audio time, so it can
     // already be up to ~250 ms old when we first read it (worker wake latency).
@@ -229,6 +258,45 @@ void DescriptorDisplay::paint (juce::Graphics& g)
                                     ? juce::String (juce::roundToInt (displayBTrackBPM))
                                     : "--";
         g.setColour (juce::Colour (0xffe08852));   // amber
+        g.setFont (juce::Font (38.0f).boldened());
+        g.drawText (btText,
+                    juce::Rectangle<float> (btCX - labelW * 0.5f, btMidY - 18.0f, labelW, 44.0f),
+                    juce::Justification::centred);
+    }
+
+    // ── beat_this readout (fourth position in the dissonance row) ────────
+    {
+        const float btBarX = startX + 3.0f * stride;
+        const float btCX   = btBarX + barW * 0.5f;
+
+        // Beat flash circle — fades over 100 ms, driven by BPM extrapolation.
+        const float circleR  = 8.0f;
+        const float circleCY = rowY + kDissonanceRowH * 0.5f - 46.0f;
+        if (displayBeatThisBeat > 0.001f)
+        {
+            const juce::Colour teal (0xff52e0c8);
+            g.setColour (teal.withAlpha (displayBeatThisBeat));
+            g.fillEllipse (btCX - circleR, circleCY - circleR,
+                           circleR * 2.0f, circleR * 2.0f);
+        }
+        g.setColour (juce::Colour (0xff555555));
+        g.drawEllipse (btCX - circleR, circleCY - circleR,
+                       circleR * 2.0f, circleR * 2.0f, 1.0f);
+
+        const float btMidY = rowY + kDissonanceRowH * 0.5f;
+
+        // "BEAT THIS" label
+        g.setColour (juce::Colours::lightgrey);
+        g.setFont (juce::Font (11.0f).boldened());
+        g.drawText ("BEAT THIS",
+                    juce::Rectangle<float> (btCX - labelW * 0.5f, btMidY - 34.0f, labelW, 16.0f),
+                    juce::Justification::centred);
+
+        // Large numeric BPM value (teal)
+        const juce::String btText = (displayBeatThisBPM > 0.0f)
+                                    ? juce::String (juce::roundToInt (displayBeatThisBPM))
+                                    : "--";
+        g.setColour (juce::Colour (0xff52e0c8));
         g.setFont (juce::Font (38.0f).boldened());
         g.drawText (btText,
                     juce::Rectangle<float> (btCX - labelW * 0.5f, btMidY - 18.0f, labelW, 44.0f),

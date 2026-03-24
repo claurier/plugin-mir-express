@@ -40,6 +40,10 @@ private:
     float displayBTrackBPM    = 0.0f;  // BTrack continuous tempo estimate
     float displayBTrackBeat   = 0.0f;  // 0..1 flash intensity, fades over ~150 ms
 
+    float  displayBeatThisBPM  = 0.0f;  // beat_this neural tempo estimate
+    double displayBeatThisLastBeat = -1.0e9; // wall-clock ms of last detected beat
+    float  displayBeatThisBeat = 0.0f;  // 0..1 continuous flash via BPM extrapolation
+
     // Mood bars:      alpha ≈ 0.15 at 30 fps  → ~200 ms response.
     // Dissonance bar: alpha ≈ 0.25 at 30 fps  → ~120 ms response (slightly faster).
     static constexpr float kMoodSmoothAlpha       = 0.15f;

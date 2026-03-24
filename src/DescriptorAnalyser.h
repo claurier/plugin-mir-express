@@ -8,9 +8,11 @@
 #include "TempoTap.h"
 #include "PeakDetection.h"
 #include "BTrack.h"
+#include "beat_this_api.h"
 
 #include <array>
 #include <atomic>
+#include <memory>
 #include <vector>
 
 //==============================================================================
@@ -56,6 +58,8 @@ public:
     float  getBPMConfidence()   const noexcept { return resultBPMConfidence.load (std::memory_order_relaxed); }
     float  getBTrackBPM()       const noexcept { return resultBTrackBPM   .load (std::memory_order_relaxed); }
     double getBTrackBeatTime()  const noexcept { return resultBTrackBeatTime.load (std::memory_order_relaxed); }
+    float  getBeatThisBPM()     const noexcept { return resultBeatThisBPM .load (std::memory_order_relaxed); }
+    double getBeatThisLastBeat() const noexcept { return resultBeatThisLastBeat.load (std::memory_order_relaxed); }
 
 private:
     void run() override;
@@ -63,6 +67,7 @@ private:
     void computeDissonance();
     void computeBPM();
     void processBTrack();
+    void computeBeatThis();
 
     // ── Mood ring buffer (3 s at max 192 kHz) ─────────────────────────────
     static constexpr int kRingSize = 3 * 192000;
@@ -103,6 +108,13 @@ private:
     int                 btrackReadPos    = 0;      // worker thread only — next ring index to feed
     bool                btrackWasSilent  = true;   // used to detect silence→sound transitions
     std::vector<double> btrackHopBuf    = std::vector<double> (512, 0.0);
+
+    // beat_this — neural beat tracker (batch, experimental)
+    // Constructed once in the DescriptorAnalyser ctor; null if the model file is absent.
+    std::unique_ptr<BeatThis::BeatThis> beatThisProcessor;
+    int                 beatThisCounter  = 0;      // worker thread only
+    std::atomic<float>  resultBeatThisBPM      { 0.0f };
+    std::atomic<double> resultBeatThisLastBeat { -1.0e9 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DescriptorAnalyser)
 };

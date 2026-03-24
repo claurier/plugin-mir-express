@@ -10,6 +10,26 @@ DescriptorAnalyser::DescriptorAnalyser()
     // Set up the onset function filter bank once (spectrum size for a 2048-sample frame).
     bpmOnsetFunction.parameterSize = 2048 / 2 + 1;
     bpmOnsetFunction.setup();
+
+    // Attempt to load the beat_this ONNX model. The path is baked in at compile time
+    // (BEAT_THIS_ONNX_PATH). If the file is missing or the ONNX session fails to
+    // initialise, beatThisProcessor stays null and beat_this is silently disabled.
+#ifdef BEAT_THIS_ONNX_PATH
+    try
+    {
+        beatThisProcessor = std::make_unique<BeatThis::BeatThis> (BEAT_THIS_ONNX_PATH);
+    }
+    catch (const std::exception& e)
+    {
+        DBG ("beat_this init failed: " << e.what());
+        beatThisProcessor = nullptr;
+    }
+    catch (...)
+    {
+        DBG ("beat_this init failed: unknown error");
+        beatThisProcessor = nullptr;
+    }
+#endif
 }
 
 DescriptorAnalyser::~DescriptorAnalyser()
@@ -87,6 +107,12 @@ void DescriptorAnalyser::run()
         {
             bpmCounter = 0;
             computeBPM();
+        }
+
+        if (++beatThisCounter >= 8)   // every ~2 s    (3 s window, neural inference)
+        {
+            beatThisCounter = 0;
+            computeBeatThis();
         }
     }
 }
@@ -319,8 +345,11 @@ void DescriptorAnalyser::processBTrack()
 
     if (rms < 0.001f)
     {
-        resultBTrackBPM     .store (0.0f,   std::memory_order_release);
-        resultBTrackBeatTime.store (-1.0e9, std::memory_order_release);
+        resultBTrackBPM       .store (0.0f,   std::memory_order_release);
+        resultBTrackBeatTime  .store (-1.0e9, std::memory_order_release);
+        // Clear beat_this immediately — its own gate only runs every ~4 s.
+        resultBeatThisBPM     .store (0.0f,   std::memory_order_release);
+        resultBeatThisLastBeat.store (-1.0e9, std::memory_order_release);
         btrackWasSilent = true;
         return;
     }
@@ -369,4 +398,72 @@ void DescriptorAnalyser::processBTrack()
     const float bpm = static_cast<float> (btrack.getCurrentTempoEstimate());
     if (bpm > 0.0f)
         resultBTrackBPM.store (bpm, std::memory_order_release);
+}
+
+//==============================================================================
+void DescriptorAnalyser::computeBeatThis()
+{
+    if (!beatThisProcessor) return;
+
+    const double sr = sampleRate.load (std::memory_order_acquire);
+    if (sr < 1.0) return;
+
+    // Copy the last 3 s from the ring buffer (same window as mood / BPM).
+    const int windowSamples = juce::jmin (static_cast<int> (sr * 3.0), kRingSize);
+    const int endPos = writePos.load (std::memory_order_acquire);
+    mirlib::realVector windowBuffer (static_cast<size_t> (windowSamples));
+
+    for (int i = 0; i < windowSamples; ++i)
+    {
+        const int idx = (endPos - windowSamples + i + kRingSize) % kRingSize;
+        windowBuffer[static_cast<size_t> (i)] = ring[static_cast<size_t> (idx)];
+    }
+
+    // Silence gate.
+    float rmsSum = 0.0f;
+    for (auto s : windowBuffer) rmsSum += s * s;
+    const float rms = std::sqrt (rmsSum / static_cast<float> (windowBuffer.size()));
+    if (rms < 0.001f)
+    {
+        resultBeatThisBPM     .store (0.0f,   std::memory_order_release);
+        resultBeatThisLastBeat.store (-1.0e9, std::memory_order_release);
+        return;
+    }
+
+    // beat_this handles resampling and mono conversion internally.
+    BeatThis::BeatResult result;
+    try
+    {
+        result = beatThisProcessor->process_audio (
+            windowBuffer.data(),
+            static_cast<size_t> (windowSamples),
+            static_cast<int> (sr),
+            1 /* mono */);
+    }
+    catch (...)
+    {
+        return;
+    }
+
+    if (result.beats.size() < 2)
+        return;
+
+    // BPM from average inter-beat interval.
+    float totalInterval = 0.0f;
+    for (size_t i = 1; i < result.beats.size(); ++i)
+        totalInterval += result.beats[i] - result.beats[i - 1];
+    const float avgInterval = totalInterval / static_cast<float> (result.beats.size() - 1);
+    const float bpm = (avgInterval > 0.0f) ? 60.0f / avgInterval : 0.0f;
+    if (bpm <= 0.0f) return;
+
+    resultBeatThisBPM.store (bpm, std::memory_order_release);
+
+    // Back-date the last beat timestamp to wall-clock time.
+    // result.beats are in seconds relative to the START of the window buffer.
+    // The END of the buffer corresponds to "now" (when writePos was read).
+    const double nowMs          = juce::Time::getMillisecondCounterHiRes();
+    const double windowDurMs    = static_cast<double> (windowSamples) / sr * 1000.0;
+    const double lastBeatOffMs  = static_cast<double> (result.beats.back()) * 1000.0;
+    const double lastBeatWallMs = nowMs - (windowDurMs - lastBeatOffMs);
+    resultBeatThisLastBeat.store (lastBeatWallMs, std::memory_order_release);
 }
