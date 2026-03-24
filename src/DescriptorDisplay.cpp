@@ -67,8 +67,7 @@ void DescriptorDisplay::paint (juce::Graphics& g)
     const float barW      = sectionW * 0.38f;              // original bar width
     const float gap       = (sectionW - barW) * 0.5f;      // half the original inter-bar gap
     const float stride    = barW + gap;
-    const float groupW    = 4.0f * barW + 3.0f * gap;      // total width of all bars + gaps
-    const float startX    = (w - groupW) * 0.5f;           // center the group horizontally
+    const float startX    = gap;                            // left-align with gap as left margin
     const float labelW    = stride;                         // label area per bar
     const float topPad    = 18.0f;
     const float labelH    = 16.0f;
