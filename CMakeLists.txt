@@ -68,8 +68,8 @@ target_sources(MirExpress
     PRIVATE
         src/PluginProcessor.cpp
         src/PluginEditor.cpp
-        src/MoodAnalyser.cpp
-        src/MoodDisplay.cpp
+        src/DescriptorAnalyser.cpp
+        src/DescriptorDisplay.cpp
 )
 
 target_compile_definitions(MirExpress

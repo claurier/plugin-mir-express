@@ -4,10 +4,10 @@
 MirExpressAudioProcessorEditor::MirExpressAudioProcessorEditor (MirExpressAudioProcessor& p)
     : AudioProcessorEditor (&p),
       audioProcessor (p),
-      moodDisplay (p.moodAnalyser)
+      descriptorDisplay (p.descriptorAnalyser)
 {
     addAndMakeVisible (audioProcessor.visualiser);
-    addAndMakeVisible (moodDisplay);
+    addAndMakeVisible (descriptorDisplay);
     setSize (kDefaultWidth, kDefaultHeight);
 }
 
@@ -26,6 +26,6 @@ void MirExpressAudioProcessorEditor::paint (juce::Graphics& g)
 void MirExpressAudioProcessorEditor::resized()
 {
     auto area = getLocalBounds();
-    audioProcessor.visualiser.setBounds (area.removeFromTop (area.getHeight() / 4));
-    moodDisplay.setBounds (area);   // remaining three-quarters
+    audioProcessor.visualiser.setBounds (area.removeFromTop (kWaveformHeight));
+    descriptorDisplay.setBounds (area);   // 295 px: 225 mood bars + 70 dissonance row
 }

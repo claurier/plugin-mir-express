@@ -1,7 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "MoodAnalyser.h"
+#include "DescriptorAnalyser.h"
 
 //==============================================================================
 /**
@@ -45,8 +45,8 @@ public:
     // Waveform visualiser — fed from the audio thread, rendered by the editor.
     juce::AudioVisualiserComponent visualiser { 2 };   // 2 channels (stereo)
 
-    // Mood analyser — runs ExtractorMood on a background thread.
-    MoodAnalyser moodAnalyser;
+    // Descriptor analyser — runs ExtractorMood on a background thread.
+    DescriptorAnalyser descriptorAnalyser;
 
 private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MirExpressAudioProcessor)

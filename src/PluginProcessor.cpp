@@ -29,7 +29,7 @@ void  MirExpressAudioProcessor::changeProgramName (int, const juce::String&) {}
 void MirExpressAudioProcessor::prepareToPlay (double sampleRate, int /*samplesPerBlock*/)
 {
     visualiser.clear();
-    moodAnalyser.prepare (sampleRate);
+    descriptorAnalyser.prepare (sampleRate);
 }
 
 void MirExpressAudioProcessor::releaseResources() {}
@@ -41,7 +41,7 @@ void MirExpressAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     juce::ScopedNoDenormals noDenormals;
 
     visualiser.pushBuffer (buffer);       // waveform display
-    moodAnalyser.pushSamples (buffer);    // mood analysis ring buffer
+    descriptorAnalyser.pushSamples (buffer);    // descriptor analysis ring buffer
 
     // Bypass: audio passes through unchanged.
 }
