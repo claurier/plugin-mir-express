@@ -1,0 +1,7 @@
+Beat / Tempo Comparison
+
+-TempoTap (from MIRLib): does not provide reliable results. The algorithm appears to be unfinished.
+
+-BTrack: provides a good tempo estimation. However, the beat indicator does not seem to work properly. There may be a latency issue that was inadvertently introduced.
+
+-beat_this_cpp: provides the best results. The tempo estimation is close to perfect (on simple examples), performing better than the others, with fewer octave errors and more precise tempo estimation.
