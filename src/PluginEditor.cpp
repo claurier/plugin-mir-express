@@ -3,17 +3,17 @@
 //==============================================================================
 MirExpressAudioProcessorEditor::MirExpressAudioProcessorEditor (MirExpressAudioProcessor& p)
     : AudioProcessorEditor (&p),
-      audioProcessor (p)
+      audioProcessor (p),
+      moodDisplay (p.moodAnalyser)
 {
     addAndMakeVisible (audioProcessor.visualiser);
+    addAndMakeVisible (moodDisplay);
     setSize (kDefaultWidth, kDefaultHeight);
 }
 
 MirExpressAudioProcessorEditor::~MirExpressAudioProcessorEditor()
 {
-    // Remove the visualiser from the component hierarchy before the editor is
-    // destroyed; the component itself is owned by the processor and must
-    // outlive any number of editor open/close cycles.
+    // visualiser is owned by the processor — just remove it from our hierarchy.
     audioProcessor.visualiser.setVisible (false);
 }
 
@@ -27,4 +27,5 @@ void MirExpressAudioProcessorEditor::resized()
 {
     auto area = getLocalBounds();
     audioProcessor.visualiser.setBounds (area.removeFromTop (area.getHeight() / 4));
+    moodDisplay.setBounds (area);   // remaining three-quarters
 }

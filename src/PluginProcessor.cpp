@@ -7,8 +7,6 @@ MirExpressAudioProcessor::MirExpressAudioProcessor()
         .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
         .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
 {
-    // Each display column averages 256 audio samples; 1024 columns are kept,
-    // giving roughly 6 s of history at 44.1 kHz (1024 * 256 / 44100 ≈ 5.9 s).
     visualiser.setSamplesPerBlock (256);
     visualiser.setBufferSize (1024);
 }
@@ -28,9 +26,10 @@ const juce::String MirExpressAudioProcessor::getProgramName (int)  { return {}; 
 void  MirExpressAudioProcessor::changeProgramName (int, const juce::String&) {}
 
 //==============================================================================
-void MirExpressAudioProcessor::prepareToPlay (double /*sampleRate*/, int /*samplesPerBlock*/)
+void MirExpressAudioProcessor::prepareToPlay (double sampleRate, int /*samplesPerBlock*/)
 {
     visualiser.clear();
+    moodAnalyser.prepare (sampleRate);
 }
 
 void MirExpressAudioProcessor::releaseResources() {}
@@ -41,8 +40,8 @@ void MirExpressAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 {
     juce::ScopedNoDenormals noDenormals;
 
-    // Feed the visualiser (thread-safe; pushBuffer is audio-thread safe).
-    visualiser.pushBuffer (buffer);
+    visualiser.pushBuffer (buffer);       // waveform display
+    moodAnalyser.pushSamples (buffer);    // mood analysis ring buffer
 
     // Bypass: audio passes through unchanged.
 }

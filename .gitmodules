@@ -1,3 +1,6 @@
 [submodule "libs/JUCE"]
 	path = libs/JUCE
 	url = https://github.com/juce-framework/JUCE.git
+[submodule "libs/MIRLib"]
+	path = libs/MIRLib
+	url = git@github.com:claurier/MIRLib.git

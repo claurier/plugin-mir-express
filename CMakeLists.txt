@@ -9,6 +9,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # ── JUCE (git submodule at libs/JUCE) ────────────────────────────
 add_subdirectory(libs/JUCE)
 
+# ── MIRLib (local library at libs/MIRLib) ────────────────────────
+add_subdirectory(libs/MIRLib)
+
 # ── Plugin target ─────────────────────────────────────────────────
 # AU is macOS-only; JUCE will only build it when targeting Apple.
 # VST3 and Standalone are cross-platform (macOS, Windows, Linux).
@@ -34,6 +37,8 @@ target_sources(MirExpress
     PRIVATE
         src/PluginProcessor.cpp
         src/PluginEditor.cpp
+        src/MoodAnalyser.cpp
+        src/MoodDisplay.cpp
 )
 
 target_compile_definitions(MirExpress
@@ -51,6 +56,7 @@ target_link_libraries(MirExpress
     PRIVATE
         juce::juce_audio_utils   # AudioProcessor, AudioProcessorEditor, StandaloneWrapper…
         juce::juce_gui_extra     # Extra GUI utilities
+        MIRLib                   # Mood analysis (ExtractorMood + SVM models)
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
