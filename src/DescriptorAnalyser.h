@@ -16,6 +16,7 @@ extern "C" {
 
 #include <array>
 #include <atomic>
+#include <deque>
 #include <memory>
 #include <vector>
 
@@ -64,9 +65,10 @@ public:
     double getBTrackBeatTime()  const noexcept { return resultBTrackBeatTime.load (std::memory_order_relaxed); }
     float  getBeatThisBPM()      const noexcept { return resultBeatThisBPM      .load (std::memory_order_relaxed); }
     double getBeatThisLastBeat() const noexcept { return resultBeatThisLastBeat .load (std::memory_order_relaxed); }
-    float  getAubioBPM()         const noexcept { return resultAubioBPM         .load (std::memory_order_relaxed); }
-    float  getAubioConfidence()  const noexcept { return resultAubioConfidence  .load (std::memory_order_relaxed); }
-    double getAubioBeatTime()    const noexcept { return resultAubioBeatTime    .load (std::memory_order_relaxed); }
+    float  getAubioBPM()          const noexcept { return resultAubioBPM         .load (std::memory_order_relaxed); }
+    float  getAubioConfidence()   const noexcept { return resultAubioConfidence  .load (std::memory_order_relaxed); }
+    double getAubioBeatTime()     const noexcept { return resultAubioBeatTime    .load (std::memory_order_relaxed); }
+    float  getAubioOnsetDensity() const noexcept { return resultAubioOnsetDensity.load (std::memory_order_relaxed); }
 
 private:
     void run() override;
@@ -131,9 +133,15 @@ private:
     fvec_t*             aubioOutput     = nullptr;  // 2 samples (beat flag + unused)
     int                 aubioReadPos    = 0;         // worker thread only
     bool                aubioWasSilent  = true;
-    std::atomic<float>  resultAubioBPM        { 0.0f };
-    std::atomic<float>  resultAubioConfidence { 0.0f };
-    std::atomic<double> resultAubioBeatTime   { -1.0e9 };
+    std::atomic<float>  resultAubioBPM         { 0.0f };
+    std::atomic<float>  resultAubioConfidence  { 0.0f };
+    std::atomic<double> resultAubioBeatTime    { -1.0e9 };
+    std::atomic<float>  resultAubioOnsetDensity{ 0.0f };  // onsets per second, 2 s window
+
+    // aubio onset detector — reuses the same hop/buf sizes as the tempo tracker.
+    aubio_onset_t*      aubioOnset      = nullptr;
+    fvec_t*             aubioOnsetOut   = nullptr;  // 1-sample output (onset flag)
+    std::deque<double>  aubioOnsetTimes;            // back-dated wall-clock timestamps (ms)
 
     static constexpr uint_t kAubioHopSize = 512;
     static constexpr uint_t kAubioBufSize = 1024;

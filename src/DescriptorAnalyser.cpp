@@ -17,9 +17,11 @@ DescriptorAnalyser::DescriptorAnalyser()
     // (BEAT_THIS_ONNX_PATH). If the file is missing or the ONNX session fails to
     // initialise, beatThisProcessor stays null and beat_this is silently disabled.
     // Create aubio tempo tracker (44100 Hz nominal; recreated on sample-rate change).
-    aubioTempo  = new_aubio_tempo ("default", kAubioBufSize, kAubioHopSize, 44100);
-    aubioInput  = new_fvec (kAubioHopSize);
-    aubioOutput = new_fvec (2);
+    aubioTempo    = new_aubio_tempo  ("default", kAubioBufSize, kAubioHopSize, 44100);
+    aubioInput    = new_fvec (kAubioHopSize);
+    aubioOutput   = new_fvec (2);
+    aubioOnset    = new_aubio_onset  ("complex", kAubioBufSize, kAubioHopSize, 44100);
+    aubioOnsetOut = new_fvec (1);
     if (aubioTempo != nullptr)
         aubio_tempo_set_silence (aubioTempo, -60.f);  // built-in silence gate at -60 dB
 
@@ -45,9 +47,11 @@ DescriptorAnalyser::~DescriptorAnalyser()
 {
     stopThread (3000);
 
-    if (aubioTempo  != nullptr) { del_aubio_tempo (aubioTempo);  aubioTempo  = nullptr; }
-    if (aubioInput  != nullptr) { del_fvec (aubioInput);         aubioInput  = nullptr; }
-    if (aubioOutput != nullptr) { del_fvec (aubioOutput);        aubioOutput = nullptr; }
+    if (aubioTempo    != nullptr) { del_aubio_tempo  (aubioTempo);    aubioTempo    = nullptr; }
+    if (aubioOnset    != nullptr) { del_aubio_onset  (aubioOnset);    aubioOnset    = nullptr; }
+    if (aubioInput    != nullptr) { del_fvec (aubioInput);            aubioInput    = nullptr; }
+    if (aubioOutput   != nullptr) { del_fvec (aubioOutput);           aubioOutput   = nullptr; }
+    if (aubioOnsetOut != nullptr) { del_fvec (aubioOnsetOut);         aubioOnsetOut = nullptr; }
     aubio_cleanup();
 }
 
@@ -62,10 +66,13 @@ void DescriptorAnalyser::prepare (double sr)
     btrackReadPos = currentPos;
     aubioReadPos  = currentPos;
 
-    // Recreate aubio at the new sample rate if it changed.
+    // Recreate aubio objects at the new sample rate if it changed.
     const uint_t newSR = static_cast<uint_t> (sr);
-    if (aubioTempo != nullptr) { del_aubio_tempo (aubioTempo); aubioTempo = nullptr; }
-    aubioTempo = new_aubio_tempo ("default", kAubioBufSize, kAubioHopSize, newSR);
+    if (aubioTempo    != nullptr) { del_aubio_tempo  (aubioTempo);    aubioTempo    = nullptr; }
+    if (aubioOnset    != nullptr) { del_aubio_onset  (aubioOnset);    aubioOnset    = nullptr; }
+    aubioTempo    = new_aubio_tempo  ("default", kAubioBufSize, kAubioHopSize, newSR);
+    aubioOnset    = new_aubio_onset  ("complex", kAubioBufSize, kAubioHopSize, newSR);
+    aubioOnsetTimes.clear();
     if (aubioTempo != nullptr)
         aubio_tempo_set_silence (aubioTempo, -60.f);
 
@@ -375,9 +382,11 @@ void DescriptorAnalyser::processBTrack()
         resultBeatThisBPM     .store (0.0f,   std::memory_order_release);
         resultBeatThisLastBeat.store (-1.0e9, std::memory_order_release);
         // Clear aubio immediately too.
-        resultAubioBPM        .store (0.0f,   std::memory_order_release);
-        resultAubioConfidence .store (0.0f,   std::memory_order_release);
-        resultAubioBeatTime   .store (-1.0e9, std::memory_order_release);
+        resultAubioBPM         .store (0.0f,   std::memory_order_release);
+        resultAubioConfidence  .store (0.0f,   std::memory_order_release);
+        resultAubioBeatTime    .store (-1.0e9, std::memory_order_release);
+        resultAubioOnsetDensity.store (0.0f,   std::memory_order_release);
+        aubioOnsetTimes.clear();
         btrackWasSilent  = true;
         aubioWasSilent   = true;
         return;
@@ -551,19 +560,37 @@ void DescriptorAnalyser::processAubio()
         for (uint_t i = 0; i < kAubioHopSize; ++i)
             fvec_set_sample (aubioInput, samples44k[static_cast<size_t> (start + i)], i);
 
+        // Back-dated wall-clock time for this hop's first sample.
+        const double ageMs = static_cast<double> (total44k - hopIdx * static_cast<int> (kAubioHopSize))
+                             / 44100.0 * 1000.0;
+        const double hopWallMs = nowMs - ageMs;
+
+        // ── Tempo ─────────────────────────────────────────────────────────
         fvec_zeros (aubioOutput);
         aubio_tempo_do (aubioTempo, aubioInput, aubioOutput);
 
         // aubioOutput->data[0] != 0.f means a beat was detected in this hop.
         if (fvec_get_sample (aubioOutput, 0) != 0.f)
+            resultAubioBeatTime.store (hopWallMs, std::memory_order_release);
+
+        // ── Onset density ─────────────────────────────────────────────────
+        if (aubioOnset != nullptr && aubioOnsetOut != nullptr)
         {
-            // Back-date: the start of this hop is (total44k − hopIdx*kAubioHopSize)
-            // samples before "now".
-            const double ageMs = static_cast<double> (total44k - hopIdx * static_cast<int> (kAubioHopSize))
-                                 / 44100.0 * 1000.0;
-            resultAubioBeatTime.store (nowMs - ageMs, std::memory_order_release);
+            fvec_zeros (aubioOnsetOut);
+            aubio_onset_do (aubioOnset, aubioInput, aubioOnsetOut);
+
+            if (fvec_get_sample (aubioOnsetOut, 0) != 0.f)
+                aubioOnsetTimes.push_back (hopWallMs);
         }
     }
+
+    // Prune onsets older than 2 s, then compute density (onsets per second).
+    const double cutoff = nowMs - 2000.0;
+    while (!aubioOnsetTimes.empty() && aubioOnsetTimes.front() < cutoff)
+        aubioOnsetTimes.pop_front();
+
+    resultAubioOnsetDensity.store (static_cast<float> (aubioOnsetTimes.size()) / 2.0f,
+                                   std::memory_order_release);
 
     const float bpm        = aubio_tempo_get_bpm        (aubioTempo);
     const float confidence = aubio_tempo_get_confidence (aubioTempo);
