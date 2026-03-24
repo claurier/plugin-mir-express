@@ -64,6 +64,50 @@ target_include_directories(BTrack PRIVATE
     libs/MIRLib/Libs/libsamplerate-0.2.2/include
 )
 
+# ── beat_this_cpp (neural beat tracker — dev/experiment only) ────────
+# The 79 MB ONNX model lives in libs/beat_this_cpp/onnx/beat_this.onnx.
+# ONNX Runtime 1.18.0 is downloaded once via FetchContent.
+# The model path is baked in at compile time for development use.
+
+include(FetchContent)
+set(ONNXRUNTIME_VERSION "1.18.0")
+
+# Select the right pre-built package for macOS.
+if(CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+    set(_ORT_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-osx-arm64-${ONNXRUNTIME_VERSION}.tgz")
+else()
+    # universal2 covers both x86_64 and arm64.
+    set(_ORT_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-osx-universal2-${ONNXRUNTIME_VERSION}.tgz")
+endif()
+
+FetchContent_Declare(ONNXRuntime URL ${_ORT_URL})
+FetchContent_MakeAvailable(ONNXRuntime)
+
+# Wrap the downloaded dylib in an imported target so we can link against it.
+add_library(onnxruntime_imported SHARED IMPORTED GLOBAL)
+set_target_properties(onnxruntime_imported PROPERTIES
+    IMPORTED_LOCATION
+        "${onnxruntime_SOURCE_DIR}/lib/libonnxruntime.${ONNXRUNTIME_VERSION}.dylib"
+    INTERFACE_INCLUDE_DIRECTORIES
+        "${onnxruntime_SOURCE_DIR}/include"
+)
+
+# beat_this static library — compiled at C++20 (their requirement),
+# isolated from our C++17 plugin code.
+add_library(beat_this_static STATIC
+    libs/beat_this_cpp/Source/beat_this_api.cpp
+    libs/beat_this_cpp/Source/MelSpectrogram.cpp
+    libs/beat_this_cpp/Source/InferenceProcessor.cpp
+    libs/beat_this_cpp/Source/Postprocessor.cpp
+)
+target_compile_features(beat_this_static PRIVATE cxx_std_20)
+target_include_directories(beat_this_static PUBLIC
+    libs/beat_this_cpp/Source
+    libs/beat_this_cpp/Submodule/pocketfft
+    libs/beat_this_cpp/Submodule/miniaudio
+)
+target_link_libraries(beat_this_static PUBLIC onnxruntime_imported)
+
 # ── Plugin target ─────────────────────────────────────────────────
 # AU is macOS-only; JUCE will only build it when targeting Apple.
 # VST3 and Standalone are cross-platform (macOS, Windows, Linux).
@@ -102,6 +146,9 @@ target_compile_definitions(MirExpress
         JUCE_VST3_CAN_REPLACE_VST2=0
         # Uncomment the line below if you hold a JUCE Personal/Pro license:
         # JUCE_DISPLAY_SPLASH_SCREEN=0
+    PRIVATE
+        # Development-only: absolute path to the beat_this ONNX model.
+        BEAT_THIS_ONNX_PATH="${CMAKE_SOURCE_DIR}/libs/beat_this_cpp/onnx/beat_this.onnx"
 )
 
 target_link_libraries(MirExpress
@@ -110,8 +157,15 @@ target_link_libraries(MirExpress
         juce::juce_gui_extra     # Extra GUI utilities
         MIRLib                   # Mood analysis (ExtractorMood + SVM models)
         BTrack                   # Real-time beat tracking
+        beat_this_static         # Neural beat tracker (experiment)
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags
+)
+
+# Allow the Standalone (and plugin bundles) to find the ONNX Runtime dylib
+# at the path where FetchContent placed it — development builds only.
+set_target_properties(MirExpress PROPERTIES
+    BUILD_RPATH "${onnxruntime_SOURCE_DIR}/lib"
 )
