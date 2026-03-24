@@ -44,6 +44,11 @@ void DescriptorDisplay::timerCallback()
                                                  analyser.getDissonance() * kDissonanceDisplayScale);
     displayDissonance += kDissonanceSmoothAlpha * (targetDissonance - displayDissonance);
 
+    // BPM: snap directly — no smoothing needed, updates every ~2 s.
+    // 0.0f means silence/unavailable → "--" is shown.
+    displayBPM           = analyser.getBPM();
+    displayBPMConfidence = analyser.getBPMConfidence();
+
     repaint();
 }
 
@@ -150,5 +155,58 @@ void DescriptorDisplay::paint (juce::Graphics& g)
     g.setFont (juce::Font (10.0f));
     g.drawText (juce::String (juce::roundToInt (dValue * 100.0f)) + "%",
                 juce::Rectangle<float> (dlcx - labelW * 0.5f, dLabelY + labelH, labelW, valueH),
+                juce::Justification::centred);
+
+    // ── BPM readout (second position in the dissonance row) ──────────────
+    const float bpmBarX = startX + stride;
+    const float bpmCX   = bpmBarX + barW * 0.5f;
+    const float bpmMidY = rowY + kDissonanceRowH * 0.5f;
+
+    // "BPM" label
+    g.setColour (juce::Colours::lightgrey);
+    g.setFont (juce::Font (11.0f).boldened());
+    g.drawText ("BPM",
+                juce::Rectangle<float> (bpmCX - labelW * 0.5f, bpmMidY - 34.0f, labelW, 16.0f),
+                juce::Justification::centred);
+
+    // Large numeric value
+    const juce::String bpmText = (displayBPM > 0.0f)
+                                 ? juce::String (juce::roundToInt (displayBPM))
+                                 : "--";
+    g.setColour (juce::Colour (0xff52c8e0));   // cyan
+    g.setFont (juce::Font (38.0f).boldened());
+    g.drawText (bpmText,
+                juce::Rectangle<float> (bpmCX - labelW * 0.5f, bpmMidY - 18.0f, labelW, 44.0f),
+                juce::Justification::centred);
+
+    // ── Confidence indicator (debug) ─────────────────────────────────────
+    // Ratio: detected onset peaks / expected beats from BPM.
+    //   ≈ 1.0  well-supported   |  < 0.5  unreliable   |  > 1.0  over-detected
+    const float confBarY    = bpmMidY + 30.0f;
+    const float confBarW    = labelW * 0.8f;
+    const float confBarH    = 4.0f;
+    const float confBarX    = bpmCX - confBarW * 0.5f;
+    const float confClamped = juce::jlimit (0.0f, 1.0f, displayBPMConfidence);
+
+    // Track
+    g.setColour (juce::Colour (0xff2e2e2e));
+    g.fillRoundedRectangle (confBarX, confBarY, confBarW, confBarH, 2.0f);
+
+    // Fill — colour shifts green→yellow→red as ratio moves away from 1.0
+    if (confClamped > 0.0f)
+    {
+        const float distFromIdeal = std::abs (displayBPMConfidence - 1.0f);
+        const juce::Colour confColour = distFromIdeal < 0.25f ? juce::Colour (0xff52e08a)   // green
+                                      : distFromIdeal < 0.60f ? juce::Colour (0xffe0c052)   // yellow
+                                                              : juce::Colour (0xffe05252);  // red
+        g.setColour (confColour);
+        g.fillRoundedRectangle (confBarX, confBarY, confBarW * confClamped, confBarH, 2.0f);
+    }
+
+    // Percentage label (shows raw ratio so > 100 % is visible)
+    g.setColour (juce::Colour (0xff888888));
+    g.setFont (juce::Font (10.0f));
+    g.drawText (juce::String (juce::roundToInt (displayBPMConfidence * 100.0f)) + "%",
+                juce::Rectangle<float> (bpmCX - labelW * 0.5f, confBarY + confBarH + 3.0f, labelW, 12.0f),
                 juce::Justification::centred);
 }

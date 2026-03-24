@@ -1,10 +1,15 @@
 #include "DescriptorAnalyser.h"
-#include "Types.h"   // mirlib::realVector = std::vector<float>
+#include "Types.h"       // mirlib::realVector = std::vector<float>
+#include <samplerate.h>  // libsamplerate — src_simple()
+#include <cmath>
 
 //==============================================================================
 DescriptorAnalyser::DescriptorAnalyser()
     : juce::Thread ("DescriptorWorker")
 {
+    // Set up the onset function filter bank once (spectrum size for a 2048-sample frame).
+    bpmOnsetFunction.parameterSize = 2048 / 2 + 1;
+    bpmOnsetFunction.setup();
 }
 
 DescriptorAnalyser::~DescriptorAnalyser()
@@ -56,6 +61,7 @@ void DescriptorAnalyser::pushSamples (const juce::AudioBuffer<float>& buffer)
 void DescriptorAnalyser::run()
 {
     int moodCounter = 0;
+    int bpmCounter  = 0;
 
     while (!threadShouldExit())
     {
@@ -71,7 +77,39 @@ void DescriptorAnalyser::run()
             moodCounter = 0;
             computeMood();
         }
+
+        if (++bpmCounter >= 8)        // every ~2 s    (3 s window)
+        {
+            bpmCounter = 0;
+            computeBPM();
+        }
     }
+}
+
+//==============================================================================
+// Resample `in` from `fromSR` to 44100 Hz using libsamplerate.
+// If the rates already match the vector is returned as-is (no allocation).
+static mirlib::realVector resampleTo44100 (const mirlib::realVector& in, double fromSR)
+{
+    constexpr double kTargetSR = 44100.0;
+    if (std::abs (fromSR - kTargetSR) < 1.0)
+        return in;
+
+    const double ratio      = kTargetSR / fromSR;
+    const int    outputSize = static_cast<int> (std::ceil (static_cast<double> (in.size()) * ratio));
+    mirlib::realVector out (static_cast<size_t> (outputSize));
+
+    SRC_DATA data {};
+    data.data_in       = in.data();
+    data.data_out      = out.data();
+    data.input_frames  = static_cast<long> (in.size());
+    data.output_frames = static_cast<long> (outputSize);
+    data.src_ratio     = ratio;
+    data.end_of_input  = 1;
+    src_simple (&data, SRC_SINC_FASTEST, 1);
+
+    out.resize (static_cast<size_t> (data.output_frames_gen));
+    return out;
 }
 
 //==============================================================================
@@ -90,8 +128,11 @@ void DescriptorAnalyser::computeMood()
         samples[static_cast<size_t> (i)] = ring[static_cast<size_t> (idx)];
     }
 
-    extractor.setSamplerate (sr);
-    extractor.process (samples);
+    // ExtractorMood's samplerateConvert asserts(false) when sr ≠ 44100.
+    // Pre-convert here so the extractor always sees exactly 44100.
+    const mirlib::realVector samples44k = resampleTo44100 (samples, sr);
+    extractor.setSamplerate (44100.0);
+    extractor.process (const_cast<mirlib::realVector&> (samples44k));
 
     resultAngry.store (extractor.getAngry(), std::memory_order_release);
     resultCalm .store (extractor.getCalm(),  std::memory_order_release);
@@ -143,4 +184,95 @@ void DescriptorAnalyser::computeDissonance()
     if (count > 0)
         resultDissonance.store (total / static_cast<float> (count),
                                 std::memory_order_release);
+}
+
+//==============================================================================
+void DescriptorAnalyser::computeBPM()
+{
+    const double sr = sampleRate.load (std::memory_order_acquire);
+    if (sr < 1.0) return;
+
+    const int windowSamples = juce::jmin (static_cast<int> (sr * 3.0), kRingSize);
+    const int frameSize     = 2048;
+    const int hopSize       = 512;   // TempoTap formula assumes MIRLIB_SAMPLERATE / 512 frames/s
+
+    // Copy the last 3 s from the mood ring buffer.
+    const int endPos = writePos.load (std::memory_order_acquire);
+    mirlib::realVector windowBuffer (static_cast<size_t> (windowSamples));
+
+    for (int i = 0; i < windowSamples; ++i)
+    {
+        const int idx = (endPos - windowSamples + i + kRingSize) % kRingSize;
+        windowBuffer[static_cast<size_t> (i)] = ring[static_cast<size_t> (idx)];
+    }
+
+    // Silence check: if RMS is below -60 dB the signal carries no rhythm.
+    float rmsSum = 0.0f;
+    for (auto s : windowBuffer) rmsSum += s * s;
+    const float rms = std::sqrt (rmsSum / static_cast<float> (windowBuffer.size()));
+    if (rms < 0.001f)
+    {
+        resultBPM          .store (0.0f, std::memory_order_release);
+        resultBPMConfidence.store (0.0f, std::memory_order_release);
+        return;
+    }
+
+    // Reset onset function state so each call starts fresh.
+    bpmOnsetFunction.clear();
+
+    // Accumulate per-frame onset function values.
+    mirlib::realVector spectrumBuffer;
+    mirlib::realVector onsetValues;
+
+    for (int start = 0; start + frameSize <= windowSamples; start += hopSize)
+    {
+        mirlib::realVector frame (windowBuffer.begin() + start,
+                                  windowBuffer.begin() + start + frameSize);
+
+        spectrum.setInputBuffer  (frame);
+        spectrum.setOutputBuffer (spectrumBuffer);
+        spectrum.process();
+
+        bpmOnsetFunction.setInputBuffer (spectrumBuffer);
+        bpmOnsetFunction.process();
+        onsetValues.push_back (static_cast<float> (bpmOnsetFunction.getOutputValue()));
+    }
+
+    if (onsetValues.empty()) return;
+
+    // TempoTap is created locally — its setup() allocates internal vectors
+    // sized to the onset function, so we recreate it each call.
+    mirlib::TempoTap tempoTap;
+    tempoTap.parameterOnsetFunctionSize = static_cast<int> (onsetValues.size());
+    tempoTap.setup();
+    tempoTap.setInputBuffer (onsetValues);
+    tempoTap.process();
+
+    const float bpm = static_cast<float> (tempoTap.getOutputValue());
+    if (bpm > 0.0f)
+    {
+        resultBPM.store (bpm, std::memory_order_release);
+
+        // Confidence: ratio of onset peaks detected to beats expected from BPM.
+        // Ratio ≈ 1.0  → estimate is well-supported by actual onsets.
+        // Ratio ≪ 1.0  → few onsets found, estimate is unreliable.
+        // Ratio ≫ 1.0  → many more onsets than beats (noisy / half-tempo issue).
+        mirlib::PeakDetection peakDetection;
+        mirlib::realVector    peaks;
+        peakDetection.setInputBuffer  (onsetValues);
+        peakDetection.setOutputBuffer (peaks);
+        peakDetection.process();
+
+        const float detectedPeaks  = static_cast<float> (peakDetection.getOutputValue());
+        const float windowDuration = static_cast<float> (windowSamples) / static_cast<float> (sr);
+        const float expectedBeats  = bpm * windowDuration / 60.0f;
+        const float confidence     = (expectedBeats > 0.0f)
+                                     ? detectedPeaks / expectedBeats
+                                     : 0.0f;
+        resultBPMConfidence.store (confidence, std::memory_order_release);
+    }
+    else
+    {
+        resultBPMConfidence.store (0.0f, std::memory_order_release);
+    }
 }

@@ -34,6 +34,8 @@ private:
     float displayHappy      = 0.0f;
     float displaySad        = 0.0f;
     float displayDissonance = 0.0f;
+    float displayBPM           = 0.0f;  // raw value, no smoothing (updates every ~2 s)
+    float displayBPMConfidence = 0.0f;  // detected/expected beat ratio (debug)
 
     // Mood bars:      alpha ≈ 0.15 at 30 fps  → ~200 ms response.
     // Dissonance bar: alpha ≈ 0.25 at 30 fps  → ~120 ms response (slightly faster).

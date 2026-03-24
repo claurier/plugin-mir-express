@@ -4,6 +4,9 @@
 #include "ExtractorMood.h"
 #include "Spectrum.h"
 #include "Dissonance.h"
+#include "OnsetFunction.h"
+#include "TempoTap.h"
+#include "PeakDetection.h"
 
 #include <array>
 #include <atomic>
@@ -47,11 +50,14 @@ public:
     float getHappy()      const noexcept { return resultHappy     .load (std::memory_order_relaxed); }
     float getSad()        const noexcept { return resultSad       .load (std::memory_order_relaxed); }
     float getDissonance() const noexcept { return resultDissonance.load (std::memory_order_relaxed); }
+    float getBPM()           const noexcept { return resultBPM          .load (std::memory_order_relaxed); }
+    float getBPMConfidence() const noexcept { return resultBPMConfidence.load (std::memory_order_relaxed); }
 
 private:
     void run() override;
     void computeMood();
     void computeDissonance();
+    void computeBPM();
 
     // ── Mood ring buffer (3 s at max 192 kHz) ─────────────────────────────
     static constexpr int kRingSize = 3 * 192000;
@@ -74,11 +80,14 @@ private:
     std::atomic<float> resultHappy      { 0.0f };
     std::atomic<float> resultSad        { 0.0f };
     std::atomic<float> resultDissonance { 0.0f };
+    std::atomic<float> resultBPM           { 0.0f };
+    std::atomic<float> resultBPMConfidence { 0.0f };
 
     // All algorithm objects are only ever touched on the worker thread.
     mirlib::ExtractorMood extractor;
     mirlib::Spectrum      spectrum;
     mirlib::Dissonance    dissonance;
+    mirlib::OnsetFunction bpmOnsetFunction;  // stateful — call clear() before each window
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DescriptorAnalyser)
 };
