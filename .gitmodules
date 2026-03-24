@@ -4,3 +4,6 @@
 [submodule "libs/MIRLib"]
 	path = libs/MIRLib
 	url = git@github.com:claurier/MIRLib.git
+[submodule "libs/BTrack"]
+	path = libs/BTrack
+	url = https://github.com/adamstark/BTrack

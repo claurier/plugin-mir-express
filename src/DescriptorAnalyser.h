@@ -7,9 +7,11 @@
 #include "OnsetFunction.h"
 #include "TempoTap.h"
 #include "PeakDetection.h"
+#include "BTrack.h"
 
 #include <array>
 #include <atomic>
+#include <vector>
 
 //==============================================================================
 /**
@@ -50,14 +52,17 @@ public:
     float getHappy()      const noexcept { return resultHappy     .load (std::memory_order_relaxed); }
     float getSad()        const noexcept { return resultSad       .load (std::memory_order_relaxed); }
     float getDissonance() const noexcept { return resultDissonance.load (std::memory_order_relaxed); }
-    float getBPM()           const noexcept { return resultBPM          .load (std::memory_order_relaxed); }
-    float getBPMConfidence() const noexcept { return resultBPMConfidence.load (std::memory_order_relaxed); }
+    float  getBPM()             const noexcept { return resultBPM          .load (std::memory_order_relaxed); }
+    float  getBPMConfidence()   const noexcept { return resultBPMConfidence.load (std::memory_order_relaxed); }
+    float  getBTrackBPM()       const noexcept { return resultBTrackBPM   .load (std::memory_order_relaxed); }
+    double getBTrackBeatTime()  const noexcept { return resultBTrackBeatTime.load (std::memory_order_relaxed); }
 
 private:
     void run() override;
     void computeMood();
     void computeDissonance();
     void computeBPM();
+    void processBTrack();
 
     // ── Mood ring buffer (3 s at max 192 kHz) ─────────────────────────────
     static constexpr int kRingSize = 3 * 192000;
@@ -80,14 +85,24 @@ private:
     std::atomic<float> resultHappy      { 0.0f };
     std::atomic<float> resultSad        { 0.0f };
     std::atomic<float> resultDissonance { 0.0f };
-    std::atomic<float> resultBPM           { 0.0f };
-    std::atomic<float> resultBPMConfidence { 0.0f };
+    std::atomic<float>  resultBPM              { 0.0f };
+    std::atomic<float>  resultBPMConfidence    { 0.0f };
+    std::atomic<float>  resultBTrackBPM        { 0.0f };
+    // Stores the hi-res timestamp (ms) of the last BTrack beat.
+    // Initialised to a large negative value so the display starts with no flash.
+    std::atomic<double> resultBTrackBeatTime   { -1.0e9 };
 
     // All algorithm objects are only ever touched on the worker thread.
     mirlib::ExtractorMood extractor;
     mirlib::Spectrum      spectrum;
     mirlib::Dissonance    dissonance;
     mirlib::OnsetFunction bpmOnsetFunction;  // stateful — call clear() before each window
+
+    // BTrack — hop=512, frame=1024 (BTrack default; assumes 44100 Hz input)
+    BTrack              btrack { 512, 1024 };
+    int                 btrackReadPos    = 0;      // worker thread only — next ring index to feed
+    bool                btrackWasSilent  = true;   // used to detect silence→sound transitions
+    std::vector<double> btrackHopBuf    = std::vector<double> (512, 0.0);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DescriptorAnalyser)
 };

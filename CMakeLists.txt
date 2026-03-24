@@ -27,7 +27,7 @@ endif()
 
 # Hard check: if a submodule directory is still empty give an
 # actionable error rather than a confusing "no CMakeLists.txt" crash.
-foreach(_submodule libs/JUCE libs/MIRLib)
+foreach(_submodule libs/JUCE libs/MIRLib libs/BTrack)
     if(NOT EXISTS "${PROJECT_SOURCE_DIR}/${_submodule}/CMakeLists.txt")
         message(FATAL_ERROR
             "\nSubmodule '${_submodule}' is missing or empty.\n"
@@ -42,6 +42,27 @@ add_subdirectory(libs/JUCE)
 
 # ── MIRLib (local library at libs/MIRLib) ────────────────────────
 add_subdirectory(libs/MIRLib)
+
+# ── BTrack (beat tracker) ─────────────────────────────────────────
+# BTrack's own CMakeLists.txt is not suitable for add_subdirectory
+# (hard-coded Homebrew paths, broken relative includes). We build it
+# directly using the three source files it needs.
+add_library(BTrack STATIC
+    libs/BTrack/src/BTrack.cpp
+    libs/BTrack/src/OnsetDetectionFunction.cpp
+    libs/BTrack/libs/kiss_fft130/kiss_fft.c
+)
+target_include_directories(BTrack PUBLIC
+    libs/BTrack/src
+    libs/BTrack/libs/kiss_fft130
+)
+target_compile_definitions(BTrack PUBLIC USE_KISS_FFT)
+# kiss_fft may use M_PI etc.
+target_compile_definitions(BTrack PRIVATE _USE_MATH_DEFINES)
+# BTrack.cpp includes samplerate.h — provide the header path from MIRLib's bundled copy.
+target_include_directories(BTrack PRIVATE
+    libs/MIRLib/Libs/libsamplerate-0.2.2/include
+)
 
 # ── Plugin target ─────────────────────────────────────────────────
 # AU is macOS-only; JUCE will only build it when targeting Apple.
@@ -88,6 +109,7 @@ target_link_libraries(MirExpress
         juce::juce_audio_utils   # AudioProcessor, AudioProcessorEditor, StandaloneWrapper…
         juce::juce_gui_extra     # Extra GUI utilities
         MIRLib                   # Mood analysis (ExtractorMood + SVM models)
+        BTrack                   # Real-time beat tracking
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags

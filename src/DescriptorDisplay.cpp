@@ -49,6 +49,17 @@ void DescriptorDisplay::timerCallback()
     displayBPM           = analyser.getBPM();
     displayBPMConfidence = analyser.getBPMConfidence();
 
+    // BTrack BPM: snap directly (continuous estimate).
+    displayBTrackBPM = analyser.getBTrackBPM();
+
+    // Beat flash: compute fade intensity from time elapsed since last beat.
+    constexpr double kFlashDurationMs = 150.0;
+    const double beatTime = analyser.getBTrackBeatTime();
+    const double elapsed  = juce::Time::getMillisecondCounterHiRes() - beatTime;
+    displayBTrackBeat = (elapsed >= 0.0 && elapsed < kFlashDurationMs)
+                        ? static_cast<float> (1.0 - elapsed / kFlashDurationMs)
+                        : 0.0f;
+
     repaint();
 }
 
@@ -178,6 +189,47 @@ void DescriptorDisplay::paint (juce::Graphics& g)
     g.drawText (bpmText,
                 juce::Rectangle<float> (bpmCX - labelW * 0.5f, bpmMidY - 18.0f, labelW, 44.0f),
                 juce::Justification::centred);
+
+    // ── BTrack readout (third position in the dissonance row) ────────────
+    {
+        const float btBarX = startX + 2.0f * stride;
+        const float btCX   = btBarX + barW * 0.5f;
+
+        // Beat flash circle — drawn above the "BTRACK" label.
+        // The circle fades from amber to transparent over 150 ms.
+        const float circleR  = 8.0f;
+        const float circleCY = rowY + kDissonanceRowH * 0.5f - 46.0f;
+        if (displayBTrackBeat > 0.001f)
+        {
+            const juce::Colour amber (0xffe08852);
+            g.setColour (amber.withAlpha (displayBTrackBeat));
+            g.fillEllipse (btCX - circleR, circleCY - circleR,
+                           circleR * 2.0f, circleR * 2.0f);
+        }
+        // Outline always visible (subtle)
+        g.setColour (juce::Colour (0xff555555));
+        g.drawEllipse (btCX - circleR, circleCY - circleR,
+                       circleR * 2.0f, circleR * 2.0f, 1.0f);
+
+        const float btMidY = rowY + kDissonanceRowH * 0.5f;
+
+        // "BTRACK" label
+        g.setColour (juce::Colours::lightgrey);
+        g.setFont (juce::Font (11.0f).boldened());
+        g.drawText ("BTRACK",
+                    juce::Rectangle<float> (btCX - labelW * 0.5f, btMidY - 34.0f, labelW, 16.0f),
+                    juce::Justification::centred);
+
+        // Large numeric value (amber)
+        const juce::String btText = (displayBTrackBPM > 0.0f)
+                                    ? juce::String (juce::roundToInt (displayBTrackBPM))
+                                    : "--";
+        g.setColour (juce::Colour (0xffe08852));   // amber
+        g.setFont (juce::Font (38.0f).boldened());
+        g.drawText (btText,
+                    juce::Rectangle<float> (btCX - labelW * 0.5f, btMidY - 18.0f, labelW, 44.0f),
+                    juce::Justification::centred);
+    }
 
     // ── Confidence indicator (debug) ─────────────────────────────────────
     // Ratio: detected onset peaks / expected beats from BPM.

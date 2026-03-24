@@ -22,6 +22,10 @@ void DescriptorAnalyser::prepare (double sr)
 {
     sampleRate.store (sr, std::memory_order_release);
 
+    // Sync btrackReadPos to the current write position so BTrack starts
+    // from "now" rather than replaying stale ring data.
+    btrackReadPos = writePos.load (std::memory_order_acquire);
+
     if (!isThreadRunning())
         startThread (juce::Thread::Priority::low);
 }
@@ -71,6 +75,7 @@ void DescriptorAnalyser::run()
             break;
 
         computeDissonance();          // every 250 ms  (0.5 s window)
+        processBTrack();              // every 250 ms  (continuous feed)
 
         if (++moodCounter >= 4)       // every ~1 s    (3 s window)
         {
@@ -275,4 +280,80 @@ void DescriptorAnalyser::computeBPM()
     {
         resultBPMConfidence.store (0.0f, std::memory_order_release);
     }
+}
+
+//==============================================================================
+void DescriptorAnalyser::processBTrack()
+{
+    const double sr = sampleRate.load (std::memory_order_acquire);
+    if (sr < 1.0) return;
+
+    const int currentWritePos = writePos.load (std::memory_order_acquire);
+
+    // How many new samples have arrived since the last call?
+    int newSamples = (currentWritePos - btrackReadPos + kRingSize) % kRingSize;
+
+    // Cap at 2 s to avoid a huge catch-up after a prepare() / restart.
+    const int maxSamples = static_cast<int> (sr * 2.0);
+    if (newSamples > maxSamples)
+    {
+        btrackReadPos = (currentWritePos - maxSamples + kRingSize) % kRingSize;
+        newSamples    = maxSamples;
+    }
+
+    if (newSamples < 1)
+        return;
+
+    // Copy new samples out of the ring buffer into a contiguous vector.
+    mirlib::realVector rawSamples (static_cast<size_t> (newSamples));
+    for (int i = 0; i < newSamples; ++i)
+        rawSamples[static_cast<size_t> (i)] =
+            ring[static_cast<size_t> ((btrackReadPos + i) % kRingSize)];
+
+    btrackReadPos = currentWritePos;
+
+    // ── Silence gate (same threshold as computeBPM) ────────────────────────
+    float rmsSum = 0.0f;
+    for (auto s : rawSamples) rmsSum += s * s;
+    const float rms = std::sqrt (rmsSum / static_cast<float> (rawSamples.size()));
+
+    if (rms < 0.001f)
+    {
+        resultBTrackBPM     .store (0.0f,   std::memory_order_release);
+        resultBTrackBeatTime.store (-1.0e9, std::memory_order_release);
+        btrackWasSilent = true;
+        return;
+    }
+
+    // Silence → sound transition: reset BTrack's internal state so it doesn't
+    // resume from 6 seconds of stale history.
+    if (btrackWasSilent)
+    {
+        btrack.updateHopAndFrameSize (512, 1024);
+        btrackWasSilent = false;
+    }
+
+    // BTrack is hard-wired to 44100 Hz — pre-convert just like computeMood().
+    const mirlib::realVector samples44k = resampleTo44100 (rawSamples, sr);
+
+    // Feed samples to BTrack in 512-sample hops.
+    constexpr int kHop = 512;
+    const int     total = static_cast<int> (samples44k.size());
+
+    for (int start = 0; start + kHop <= total; start += kHop)
+    {
+        for (int i = 0; i < kHop; ++i)
+            btrackHopBuf[static_cast<size_t> (i)] =
+                static_cast<double> (samples44k[static_cast<size_t> (start + i)]);
+
+        btrack.processAudioFrame (btrackHopBuf.data());
+
+        if (btrack.beatDueInCurrentFrame())
+            resultBTrackBeatTime.store (juce::Time::getMillisecondCounterHiRes(),
+                                        std::memory_order_release);
+    }
+
+    const float bpm = static_cast<float> (btrack.getCurrentTempoEstimate());
+    if (bpm > 0.0f)
+        resultBTrackBPM.store (bpm, std::memory_order_release);
 }
