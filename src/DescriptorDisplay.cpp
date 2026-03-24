@@ -53,7 +53,11 @@ void DescriptorDisplay::timerCallback()
     displayBTrackBPM = analyser.getBTrackBPM();
 
     // Beat flash: compute fade intensity from time elapsed since last beat.
-    constexpr double kFlashDurationMs = 150.0;
+    // The beat timestamp is back-dated to the actual audio time, so it can
+    // already be up to ~250 ms old when we first read it (worker wake latency).
+    // 500 ms gives a visible flash even for the earliest hop in a 250 ms batch,
+    // while still fading well before the next beat at typical tempi (≥ 60 BPM).
+    constexpr double kFlashDurationMs = 500.0;
     const double beatTime = analyser.getBTrackBeatTime();
     const double elapsed  = juce::Time::getMillisecondCounterHiRes() - beatTime;
     displayBTrackBeat = (elapsed >= 0.0 && elapsed < kFlashDurationMs)

@@ -336,11 +336,18 @@ void DescriptorAnalyser::processBTrack()
     // BTrack is hard-wired to 44100 Hz — pre-convert just like computeMood().
     const mirlib::realVector samples44k = resampleTo44100 (rawSamples, sr);
 
+    // Capture wall-clock time once for the whole batch.
+    // samples44k[total44k - 1] corresponds to the most recent audio sample
+    // (written just before we read writePos). We back-calculate each hop's
+    // actual wall-clock time from this anchor so the beat flash is not delayed
+    // by the worker wake-up latency.
+    const double nowMs   = juce::Time::getMillisecondCounterHiRes();
+    const int    total44k = static_cast<int> (samples44k.size());
+
     // Feed samples to BTrack in 512-sample hops.
     constexpr int kHop = 512;
-    const int     total = static_cast<int> (samples44k.size());
 
-    for (int start = 0; start + kHop <= total; start += kHop)
+    for (int hopIdx = 0, start = 0; start + kHop <= total44k; start += kHop, ++hopIdx)
     {
         for (int i = 0; i < kHop; ++i)
             btrackHopBuf[static_cast<size_t> (i)] =
@@ -349,8 +356,14 @@ void DescriptorAnalyser::processBTrack()
         btrack.processAudioFrame (btrackHopBuf.data());
 
         if (btrack.beatDueInCurrentFrame())
-            resultBTrackBeatTime.store (juce::Time::getMillisecondCounterHiRes(),
-                                        std::memory_order_release);
+        {
+            // Back-date: this hop's audio starts at sample [hopIdx*kHop] within
+            // samples44k. The distance from that sample to the end of the buffer
+            // (= "now") is (total44k - hopIdx*kHop) samples at 44100 Hz.
+            const double ageMs = static_cast<double> (total44k - hopIdx * kHop)
+                                 / 44100.0 * 1000.0;
+            resultBTrackBeatTime.store (nowMs - ageMs, std::memory_order_release);
+        }
     }
 
     const float bpm = static_cast<float> (btrack.getCurrentTempoEstimate());
