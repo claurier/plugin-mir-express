@@ -18,7 +18,7 @@ private:
     MirExpressAudioProcessor& audioProcessor;
     DescriptorDisplay         descriptorDisplay;
 
-    static constexpr int kDefaultWidth  = 600;
+    static constexpr int kDefaultWidth  = 750;  // widened for 5 descriptor columns
     static constexpr int kDefaultHeight = 525;  // 75 waveform + 225 mood + 225 dissonance
     static constexpr int kWaveformHeight = 75;
 

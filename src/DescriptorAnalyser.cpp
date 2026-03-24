@@ -1,4 +1,6 @@
 #include "DescriptorAnalyser.h"
+
+// aubio.h is already included via DescriptorAnalyser.h
 #include "Types.h"       // mirlib::realVector = std::vector<float>
 #include <samplerate.h>  // libsamplerate — src_simple()
 #include <cmath>
@@ -14,6 +16,13 @@ DescriptorAnalyser::DescriptorAnalyser()
     // Attempt to load the beat_this ONNX model. The path is baked in at compile time
     // (BEAT_THIS_ONNX_PATH). If the file is missing or the ONNX session fails to
     // initialise, beatThisProcessor stays null and beat_this is silently disabled.
+    // Create aubio tempo tracker (44100 Hz nominal; recreated on sample-rate change).
+    aubioTempo  = new_aubio_tempo ("default", kAubioBufSize, kAubioHopSize, 44100);
+    aubioInput  = new_fvec (kAubioHopSize);
+    aubioOutput = new_fvec (2);
+    if (aubioTempo != nullptr)
+        aubio_tempo_set_silence (aubioTempo, -60.f);  // built-in silence gate at -60 dB
+
 #ifdef BEAT_THIS_ONNX_PATH
     try
     {
@@ -35,6 +44,11 @@ DescriptorAnalyser::DescriptorAnalyser()
 DescriptorAnalyser::~DescriptorAnalyser()
 {
     stopThread (3000);
+
+    if (aubioTempo  != nullptr) { del_aubio_tempo (aubioTempo);  aubioTempo  = nullptr; }
+    if (aubioInput  != nullptr) { del_fvec (aubioInput);         aubioInput  = nullptr; }
+    if (aubioOutput != nullptr) { del_fvec (aubioOutput);        aubioOutput = nullptr; }
+    aubio_cleanup();
 }
 
 //==============================================================================
@@ -42,9 +56,18 @@ void DescriptorAnalyser::prepare (double sr)
 {
     sampleRate.store (sr, std::memory_order_release);
 
-    // Sync btrackReadPos to the current write position so BTrack starts
-    // from "now" rather than replaying stale ring data.
-    btrackReadPos = writePos.load (std::memory_order_acquire);
+    // Sync read positions so both BTrack and aubio start from "now" on
+    // the first call rather than replaying stale ring data.
+    const int currentPos = writePos.load (std::memory_order_acquire);
+    btrackReadPos = currentPos;
+    aubioReadPos  = currentPos;
+
+    // Recreate aubio at the new sample rate if it changed.
+    const uint_t newSR = static_cast<uint_t> (sr);
+    if (aubioTempo != nullptr) { del_aubio_tempo (aubioTempo); aubioTempo = nullptr; }
+    aubioTempo = new_aubio_tempo ("default", kAubioBufSize, kAubioHopSize, newSR);
+    if (aubioTempo != nullptr)
+        aubio_tempo_set_silence (aubioTempo, -60.f);
 
     if (!isThreadRunning())
         startThread (juce::Thread::Priority::low);
@@ -96,6 +119,7 @@ void DescriptorAnalyser::run()
 
         computeDissonance();          // every 250 ms  (0.5 s window)
         processBTrack();              // every 250 ms  (continuous feed)
+        processAubio();               // every 250 ms  (continuous feed)
 
         if (++moodCounter >= 4)       // every ~1 s    (3 s window)
         {
@@ -347,10 +371,15 @@ void DescriptorAnalyser::processBTrack()
     {
         resultBTrackBPM       .store (0.0f,   std::memory_order_release);
         resultBTrackBeatTime  .store (-1.0e9, std::memory_order_release);
-        // Clear beat_this immediately — its own gate only runs every ~4 s.
+        // Clear beat_this immediately — its own gate only runs every ~2 s.
         resultBeatThisBPM     .store (0.0f,   std::memory_order_release);
         resultBeatThisLastBeat.store (-1.0e9, std::memory_order_release);
-        btrackWasSilent = true;
+        // Clear aubio immediately too.
+        resultAubioBPM        .store (0.0f,   std::memory_order_release);
+        resultAubioConfidence .store (0.0f,   std::memory_order_release);
+        resultAubioBeatTime   .store (-1.0e9, std::memory_order_release);
+        btrackWasSilent  = true;
+        aubioWasSilent   = true;
         return;
     }
 
@@ -466,4 +495,82 @@ void DescriptorAnalyser::computeBeatThis()
     const double lastBeatOffMs  = static_cast<double> (result.beats.back()) * 1000.0;
     const double lastBeatWallMs = nowMs - (windowDurMs - lastBeatOffMs);
     resultBeatThisLastBeat.store (lastBeatWallMs, std::memory_order_release);
+}
+
+//==============================================================================
+void DescriptorAnalyser::processAubio()
+{
+    if (aubioTempo == nullptr || aubioInput == nullptr || aubioOutput == nullptr)
+        return;
+
+    const double sr = sampleRate.load (std::memory_order_acquire);
+    if (sr < 1.0) return;
+
+    const int currentWritePos = writePos.load (std::memory_order_acquire);
+
+    // How many new samples since the last call?
+    int newSamples = (currentWritePos - aubioReadPos + kRingSize) % kRingSize;
+
+    // Cap at 2 s to avoid a catch-up burst after prepare() / restart.
+    const int maxSamples = static_cast<int> (sr * 2.0);
+    if (newSamples > maxSamples)
+    {
+        aubioReadPos = (currentWritePos - maxSamples + kRingSize) % kRingSize;
+        newSamples   = maxSamples;
+    }
+
+    if (newSamples < static_cast<int> (kAubioHopSize))
+        return;
+
+    // aubio_tempo expects 44100 Hz — pre-convert if needed.
+    mirlib::realVector rawSamples (static_cast<size_t> (newSamples));
+    for (int i = 0; i < newSamples; ++i)
+        rawSamples[static_cast<size_t> (i)] =
+            ring[static_cast<size_t> ((aubioReadPos + i) % kRingSize)];
+    aubioReadPos = currentWritePos;
+
+    const mirlib::realVector samples44k = resampleTo44100 (rawSamples, sr);
+
+    // Silence → sound: recreate the tempo object so aubio starts fresh.
+    if (aubioWasSilent)
+    {
+        del_aubio_tempo (aubioTempo);
+        aubioTempo = new_aubio_tempo ("default", kAubioBufSize, kAubioHopSize, 44100);
+        if (aubioTempo == nullptr) return;
+        aubio_tempo_set_silence (aubioTempo, -60.f);
+        aubioWasSilent = false;
+    }
+
+    const double nowMs    = juce::Time::getMillisecondCounterHiRes();
+    const int    total44k = static_cast<int> (samples44k.size());
+
+    for (int hopIdx = 0, start = 0; start + static_cast<int> (kAubioHopSize) <= total44k;
+         start += static_cast<int> (kAubioHopSize), ++hopIdx)
+    {
+        // Fill the aubio input fvec.
+        for (uint_t i = 0; i < kAubioHopSize; ++i)
+            fvec_set_sample (aubioInput, samples44k[static_cast<size_t> (start + i)], i);
+
+        fvec_zeros (aubioOutput);
+        aubio_tempo_do (aubioTempo, aubioInput, aubioOutput);
+
+        // aubioOutput->data[0] != 0.f means a beat was detected in this hop.
+        if (fvec_get_sample (aubioOutput, 0) != 0.f)
+        {
+            // Back-date: the start of this hop is (total44k − hopIdx*kAubioHopSize)
+            // samples before "now".
+            const double ageMs = static_cast<double> (total44k - hopIdx * static_cast<int> (kAubioHopSize))
+                                 / 44100.0 * 1000.0;
+            resultAubioBeatTime.store (nowMs - ageMs, std::memory_order_release);
+        }
+    }
+
+    const float bpm        = aubio_tempo_get_bpm        (aubioTempo);
+    const float confidence = aubio_tempo_get_confidence (aubioTempo);
+
+    if (bpm > 0.f)
+    {
+        resultAubioBPM       .store (bpm,        std::memory_order_release);
+        resultAubioConfidence.store (confidence, std::memory_order_release);
+    }
 }

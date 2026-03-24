@@ -10,6 +10,10 @@
 #include "BTrack.h"
 #include "beat_this_api.h"
 
+extern "C" {
+#include "aubio.h"
+}
+
 #include <array>
 #include <atomic>
 #include <memory>
@@ -58,8 +62,11 @@ public:
     float  getBPMConfidence()   const noexcept { return resultBPMConfidence.load (std::memory_order_relaxed); }
     float  getBTrackBPM()       const noexcept { return resultBTrackBPM   .load (std::memory_order_relaxed); }
     double getBTrackBeatTime()  const noexcept { return resultBTrackBeatTime.load (std::memory_order_relaxed); }
-    float  getBeatThisBPM()     const noexcept { return resultBeatThisBPM .load (std::memory_order_relaxed); }
-    double getBeatThisLastBeat() const noexcept { return resultBeatThisLastBeat.load (std::memory_order_relaxed); }
+    float  getBeatThisBPM()      const noexcept { return resultBeatThisBPM      .load (std::memory_order_relaxed); }
+    double getBeatThisLastBeat() const noexcept { return resultBeatThisLastBeat .load (std::memory_order_relaxed); }
+    float  getAubioBPM()         const noexcept { return resultAubioBPM         .load (std::memory_order_relaxed); }
+    float  getAubioConfidence()  const noexcept { return resultAubioConfidence  .load (std::memory_order_relaxed); }
+    double getAubioBeatTime()    const noexcept { return resultAubioBeatTime    .load (std::memory_order_relaxed); }
 
 private:
     void run() override;
@@ -68,6 +75,7 @@ private:
     void computeBPM();
     void processBTrack();
     void computeBeatThis();
+    void processAubio();
 
     // ── Mood ring buffer (3 s at max 192 kHz) ─────────────────────────────
     static constexpr int kRingSize = 3 * 192000;
@@ -115,6 +123,20 @@ private:
     int                 beatThisCounter  = 0;      // worker thread only
     std::atomic<float>  resultBeatThisBPM      { 0.0f };
     std::atomic<double> resultBeatThisLastBeat { -1.0e9 };
+
+    // aubio — real-time tempo + beat tracker
+    // Raw C pointers; created/destroyed explicitly (aubio has no C++ RAII).
+    aubio_tempo_t*      aubioTempo      = nullptr;
+    fvec_t*             aubioInput      = nullptr;  // hop_size samples
+    fvec_t*             aubioOutput     = nullptr;  // 2 samples (beat flag + unused)
+    int                 aubioReadPos    = 0;         // worker thread only
+    bool                aubioWasSilent  = true;
+    std::atomic<float>  resultAubioBPM        { 0.0f };
+    std::atomic<float>  resultAubioConfidence { 0.0f };
+    std::atomic<double> resultAubioBeatTime   { -1.0e9 };
+
+    static constexpr uint_t kAubioHopSize = 512;
+    static constexpr uint_t kAubioBufSize = 1024;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DescriptorAnalyser)
 };

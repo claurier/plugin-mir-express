@@ -108,6 +108,31 @@ target_include_directories(beat_this_static PUBLIC
 )
 target_link_libraries(beat_this_static PUBLIC onnxruntime_imported)
 
+# ── aubio (real-time tempo + beat tracker — experiment) ──────────────
+# Compiled directly from source — aubio's CMakeLists only builds shared libs.
+# We include every .c file except file-I/O and the two FFT back-ends that
+# need external libraries (fftw, ipp).  With HAVE_ACCELERATE defined the
+# spectral/fft.c module uses Apple's vDSP (already linked by JUCE on macOS).
+
+file(GLOB_RECURSE AUBIO_SOURCES
+    "libs/aubio/src/*.c"
+)
+# Remove file-I/O (needs libsndfile / libav / etc.) and external-FFT back-ends.
+list(FILTER AUBIO_SOURCES EXCLUDE REGEX ".*/io/.*")
+list(FILTER AUBIO_SOURCES EXCLUDE REGEX "dct_fftw\\.c$")
+list(FILTER AUBIO_SOURCES EXCLUDE REGEX "dct_ipp\\.c$")
+
+add_library(aubio_static STATIC ${AUBIO_SOURCES})
+target_include_directories(aubio_static PUBLIC libs/aubio/src)
+target_compile_definitions(aubio_static PUBLIC
+    HAVE_ACCELERATE=1          # use Apple vDSP for FFT (Accelerate already linked by JUCE)
+    HAVE_C99_VARARGS_MACROS=1  # always true on Clang/GCC
+    # Silence the "AUBIO_UNSTABLE" guard in 0.5.x headers
+    AUBIO_UNSTABLE=1
+)
+# Suppress warnings from aubio's own code (we can't fix them).
+target_compile_options(aubio_static PRIVATE -w)
+
 # ── Plugin target ─────────────────────────────────────────────────
 # AU is macOS-only; JUCE will only build it when targeting Apple.
 # VST3 and Standalone are cross-platform (macOS, Windows, Linux).
@@ -158,6 +183,7 @@ target_link_libraries(MirExpress
         MIRLib                   # Mood analysis (ExtractorMood + SVM models)
         BTrack                   # Real-time beat tracking
         beat_this_static         # Neural beat tracker (experiment)
+        aubio_static             # Real-time tempo + beat (experiment)
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags

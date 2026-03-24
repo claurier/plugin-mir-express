@@ -93,6 +93,18 @@ void DescriptorDisplay::timerCallback()
                         ? static_cast<float> (1.0 - elapsed / kFlashDurationMs)
                         : 0.0f;
 
+    // aubio: back-dated beat timestamps → direct flash, same pattern as BTrack.
+    displayAubioBPM        = analyser.getAubioBPM();
+    displayAubioConfidence = analyser.getAubioConfidence();
+    {
+        constexpr double kFlashDurationMs = 500.0;
+        const double beatTime = analyser.getAubioBeatTime();
+        const double elapsed  = juce::Time::getMillisecondCounterHiRes() - beatTime;
+        displayAubioBeat = (elapsed >= 0.0 && elapsed < kFlashDurationMs)
+                           ? static_cast<float> (1.0 - elapsed / kFlashDurationMs)
+                           : 0.0f;
+    }
+
     repaint();
 }
 
@@ -300,6 +312,71 @@ void DescriptorDisplay::paint (juce::Graphics& g)
         g.setFont (juce::Font (38.0f).boldened());
         g.drawText (btText,
                     juce::Rectangle<float> (btCX - labelW * 0.5f, btMidY - 18.0f, labelW, 44.0f),
+                    juce::Justification::centred);
+    }
+
+    // ── aubio readout (fifth position in the dissonance row) ─────────────
+    {
+        const float abBarX = startX + 4.0f * stride;
+        const float abCX   = abBarX + barW * 0.5f;
+
+        // Beat flash circle
+        const float circleR  = 8.0f;
+        const float circleCY = rowY + kDissonanceRowH * 0.5f - 46.0f;
+        if (displayAubioBeat > 0.001f)
+        {
+            const juce::Colour orange (0xffe08040);
+            g.setColour (orange.withAlpha (displayAubioBeat));
+            g.fillEllipse (abCX - circleR, circleCY - circleR,
+                           circleR * 2.0f, circleR * 2.0f);
+        }
+        g.setColour (juce::Colour (0xff555555));
+        g.drawEllipse (abCX - circleR, circleCY - circleR,
+                       circleR * 2.0f, circleR * 2.0f, 1.0f);
+
+        const float abMidY = rowY + kDissonanceRowH * 0.5f;
+
+        // "AUBIO" label
+        g.setColour (juce::Colours::lightgrey);
+        g.setFont (juce::Font (11.0f).boldened());
+        g.drawText ("AUBIO",
+                    juce::Rectangle<float> (abCX - labelW * 0.5f, abMidY - 34.0f, labelW, 16.0f),
+                    juce::Justification::centred);
+
+        // Large BPM value (orange)
+        const juce::String abText = (displayAubioBPM > 0.0f)
+                                    ? juce::String (juce::roundToInt (displayAubioBPM))
+                                    : "--";
+        g.setColour (juce::Colour (0xffe08040));
+        g.setFont (juce::Font (38.0f).boldened());
+        g.drawText (abText,
+                    juce::Rectangle<float> (abCX - labelW * 0.5f, abMidY - 18.0f, labelW, 44.0f),
+                    juce::Justification::centred);
+
+        // Confidence bar (same layout as TempoTap confidence)
+        const float confBarY = abMidY + 30.0f;
+        const float confBarW = labelW * 0.8f;
+        const float confBarH = 4.0f;
+        const float confBarX = abCX - confBarW * 0.5f;
+        const float confVal  = juce::jlimit (0.0f, 1.0f, displayAubioConfidence);
+
+        g.setColour (juce::Colour (0xff2e2e2e));
+        g.fillRoundedRectangle (confBarX, confBarY, confBarW, confBarH, 2.0f);
+
+        if (confVal > 0.0f)
+        {
+            const float dist = std::abs (displayAubioConfidence - 1.0f);
+            const juce::Colour confColour = dist < 0.25f ? juce::Colour (0xff52e08a)
+                                           : dist < 0.60f ? juce::Colour (0xffe0c052)
+                                                          : juce::Colour (0xffe05252);
+            g.setColour (confColour);
+            g.fillRoundedRectangle (confBarX, confBarY, confBarW * confVal, confBarH, 2.0f);
+        }
+
+        g.setColour (juce::Colour (0xff888888));
+        g.setFont (juce::Font (10.0f));
+        g.drawText (juce::String (juce::roundToInt (displayAubioConfidence * 100.0f)) + "%",
+                    juce::Rectangle<float> (abCX - labelW * 0.5f, confBarY + confBarH + 3.0f, labelW, 12.0f),
                     juce::Justification::centred);
     }
 
