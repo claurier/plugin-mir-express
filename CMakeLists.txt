@@ -6,6 +6,37 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# ── Auto-initialize git submodules (JUCE, MIRLib) ─────────────────
+# Attempts to pull submodules automatically during configure.
+# Falls back to a clear error message if git is unavailable or fails
+# (e.g. no SSH agent, no network) so the developer knows exactly what
+# to run manually.
+find_package(Git QUIET)
+if(GIT_FOUND AND EXISTS "${PROJECT_SOURCE_DIR}/.git")
+    message(STATUS "Updating git submodules...")
+    execute_process(
+        COMMAND           ${GIT_EXECUTABLE} submodule update --init --recursive
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        RESULT_VARIABLE   GIT_SUBMODULE_RESULT
+        ERROR_VARIABLE    GIT_SUBMODULE_ERROR
+    )
+    if(NOT GIT_SUBMODULE_RESULT EQUAL "0")
+        message(WARNING "git submodule update failed:\n${GIT_SUBMODULE_ERROR}")
+    endif()
+endif()
+
+# Hard check: if a submodule directory is still empty give an
+# actionable error rather than a confusing "no CMakeLists.txt" crash.
+foreach(_submodule libs/JUCE libs/MIRLib)
+    if(NOT EXISTS "${PROJECT_SOURCE_DIR}/${_submodule}/CMakeLists.txt")
+        message(FATAL_ERROR
+            "\nSubmodule '${_submodule}' is missing or empty.\n"
+            "Please run:\n"
+            "    git submodule update --init --recursive\n"
+            "then re-run cmake.")
+    endif()
+endforeach()
+
 # ── JUCE (git submodule at libs/JUCE) ────────────────────────────
 add_subdirectory(libs/JUCE)
 
