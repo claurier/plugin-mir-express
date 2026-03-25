@@ -47,6 +47,7 @@ private:
     float  displayAubioBeat       = 0.0f;  // 0..1 flash intensity
 
     float  displayOnsetDensity    = 0.0f;  // onsets / s, smoothed
+    float  displayRMS             = 0.0f;  // normalised dBFS, smoothed
 
     // Mood bars:      alpha ≈ 0.15 at 30 fps  → ~200 ms response.
     // Dissonance bar: alpha ≈ 0.25 at 30 fps  → ~120 ms response (slightly faster).

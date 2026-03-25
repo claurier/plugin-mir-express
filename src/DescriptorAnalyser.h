@@ -69,11 +69,13 @@ public:
     float  getAubioConfidence()   const noexcept { return resultAubioConfidence  .load (std::memory_order_relaxed); }
     double getAubioBeatTime()     const noexcept { return resultAubioBeatTime    .load (std::memory_order_relaxed); }
     float  getAubioOnsetDensity() const noexcept { return resultAubioOnsetDensity.load (std::memory_order_relaxed); }
+    float  getRMS()               const noexcept { return resultRMS              .load (std::memory_order_relaxed); }
 
 private:
     void run() override;
     void computeMood();
     void computeDissonance();
+    void computeRMS();
     void computeBPM();
     void processBTrack();
     void computeBeatThis();
@@ -95,6 +97,7 @@ private:
     std::atomic<double> sampleRate { 44100.0 };
 
     // ── Results ───────────────────────────────────────────────────────────
+    std::atomic<float> resultRMS        { 0.0f };  // normalised dBFS, 0 = -60 dB, 1 = 0 dB
     std::atomic<float> resultAngry      { 0.0f };
     std::atomic<float> resultCalm       { 0.0f };
     std::atomic<float> resultHappy      { 0.0f };

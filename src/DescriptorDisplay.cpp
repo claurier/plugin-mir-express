@@ -9,11 +9,12 @@ namespace
         juce::Colour  colour;
     };
 
-    const std::array<MoodBar, 4> kBars {{
+    const std::array<MoodBar, 5> kBars {{
         { "ANGRY",   juce::Colour (0xffe05252) },  // red
         { "CALM",    juce::Colour (0xff5285e0) },  // blue
         { "HAPPY",   juce::Colour (0xffe0c052) },  // warm yellow
         { "SAD",     juce::Colour (0xff7b52e0) },  // purple
+        { "RMS",     juce::Colour (0xffcccccc) },  // light gray (level)
     }};
 
     const juce::Colour kDissonanceColour { 0xff555555 };  // dark gray
@@ -88,8 +89,9 @@ void DescriptorDisplay::timerCallback()
                         ? static_cast<float> (1.0 - elapsed / kFlashDurationMs)
                         : 0.0f;
 
-    // Onset density: smooth like mood bars.
+    // Onset density and RMS: smooth like mood bars.
     displayOnsetDensity += kMoodSmoothAlpha * (analyser.getAubioOnsetDensity() - displayOnsetDensity);
+    displayRMS          += kMoodSmoothAlpha * (analyser.getRMS()               - displayRMS);
 
     // aubio: back-dated beat timestamps → direct flash, same pattern as BTrack.
     displayAubioBPM        = analyser.getAubioBPM();
@@ -121,7 +123,7 @@ void DescriptorDisplay::paint (juce::Graphics& g)
 
     // ── Mood bars (top portion) ───────────────────────────────────────────
     const float moodH    = h - kDissonanceRowH;
-    const int   numBars  = 4;
+    const int   numBars  = 5;
     const float sectionW = w / static_cast<float> (numBars);
     const float barW      = sectionW * 0.38f;
     const float gap       = (sectionW - barW) * 0.5f;
@@ -134,8 +136,8 @@ void DescriptorDisplay::paint (juce::Graphics& g)
     const float bottomPad = labelH + valueH + 10.0f;
     const float barH      = moodH - topPad - bottomPad;
 
-    const std::array<float, 4> values {
-        displayAngry, displayCalm, displayHappy, displaySad
+    const std::array<float, 5> values {
+        displayAngry, displayCalm, displayHappy, displaySad, displayRMS
     };
 
     for (int i = 0; i < numBars; ++i)

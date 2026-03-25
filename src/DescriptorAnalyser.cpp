@@ -125,6 +125,7 @@ void DescriptorAnalyser::run()
             break;
 
         computeDissonance();          // every 250 ms  (0.5 s window)
+        computeRMS();                 // every 250 ms  (0.5 s window, dBFS)
         processBTrack();              // every 250 ms  (continuous feed)
         processAubio();               // every 250 ms  (continuous feed)
 
@@ -246,6 +247,32 @@ void DescriptorAnalyser::computeDissonance()
     if (count > 0)
         resultDissonance.store (total / static_cast<float> (count),
                                 std::memory_order_release);
+}
+
+//==============================================================================
+void DescriptorAnalyser::computeRMS()
+{
+    const int endPos  = dissonanceWritePos.load (std::memory_order_acquire);
+    const int winSize = kDissonanceRingSize;  // 0.5 s of samples
+
+    // Linearise the circular buffer into a contiguous array.
+    std::vector<float> tmp (static_cast<size_t> (winSize));
+    for (int i = 0; i < winSize; ++i)
+    {
+        const int idx = (endPos - winSize + i + kDissonanceRingSize) % kDissonanceRingSize;
+        tmp[static_cast<size_t> (i)] = dissonanceRing[static_cast<size_t> (idx)];
+    }
+
+    // Use juce::AudioBuffer::getRMSLevel() — zero-copy wrapper over tmp.
+    float* ptr = tmp.data();
+    juce::AudioBuffer<float> buf (&ptr, 1, winSize);
+    const float rms = buf.getRMSLevel (0, 0, winSize);
+
+    // Convert to normalised dBFS: -60 dB → 0.0, 0 dB → 1.0.
+    constexpr float kFloorDb = -60.0f;
+    const float dBFS = (rms > 1.0e-6f) ? 20.0f * std::log10 (rms) : kFloorDb;
+    const float norm = juce::jlimit (0.0f, 1.0f, (dBFS - kFloorDb) / (-kFloorDb));
+    resultRMS.store (norm, std::memory_order_release);
 }
 
 //==============================================================================
