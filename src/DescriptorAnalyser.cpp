@@ -17,11 +17,15 @@ DescriptorAnalyser::DescriptorAnalyser()
     // (BEAT_THIS_ONNX_PATH). If the file is missing or the ONNX session fails to
     // initialise, beatThisProcessor stays null and beat_this is silently disabled.
     // Create aubio tempo tracker (44100 Hz nominal; recreated on sample-rate change).
-    aubioTempo    = new_aubio_tempo  ("default", kAubioBufSize, kAubioHopSize, 44100);
-    aubioInput    = new_fvec (kAubioHopSize);
-    aubioOutput   = new_fvec (2);
-    aubioOnset    = new_aubio_onset  ("complex", kAubioBufSize, kAubioHopSize, 44100);
-    aubioOnsetOut = new_fvec (1);
+    aubioTempo       = new_aubio_tempo    ("default",  kAubioBufSize, kAubioHopSize, 44100);
+    aubioInput       = new_fvec           (kAubioHopSize);
+    aubioOutput      = new_fvec           (2);
+    aubioOnset       = new_aubio_onset    ("complex",  kAubioBufSize, kAubioHopSize, 44100);
+    aubioOnsetOut    = new_fvec           (1);
+    aubioPvoc        = new_aubio_pvoc     (kAubioBufSize, kAubioHopSize);
+    aubioGrain       = new_cvec           (kAubioBufSize);
+    aubioSpecdesc    = new_aubio_specdesc ("centroid", kAubioBufSize);
+    aubioSpecdescOut = new_fvec           (1);
     if (aubioTempo != nullptr)
         aubio_tempo_set_silence (aubioTempo, -60.f);  // built-in silence gate at -60 dB
 
@@ -47,11 +51,15 @@ DescriptorAnalyser::~DescriptorAnalyser()
 {
     stopThread (3000);
 
-    if (aubioTempo    != nullptr) { del_aubio_tempo  (aubioTempo);    aubioTempo    = nullptr; }
-    if (aubioOnset    != nullptr) { del_aubio_onset  (aubioOnset);    aubioOnset    = nullptr; }
-    if (aubioInput    != nullptr) { del_fvec (aubioInput);            aubioInput    = nullptr; }
-    if (aubioOutput   != nullptr) { del_fvec (aubioOutput);           aubioOutput   = nullptr; }
-    if (aubioOnsetOut != nullptr) { del_fvec (aubioOnsetOut);         aubioOnsetOut = nullptr; }
+    if (aubioTempo       != nullptr) { del_aubio_tempo    (aubioTempo);       aubioTempo       = nullptr; }
+    if (aubioOnset       != nullptr) { del_aubio_onset    (aubioOnset);       aubioOnset       = nullptr; }
+    if (aubioSpecdesc    != nullptr) { del_aubio_specdesc (aubioSpecdesc);    aubioSpecdesc    = nullptr; }
+    if (aubioPvoc        != nullptr) { del_aubio_pvoc     (aubioPvoc);        aubioPvoc        = nullptr; }
+    if (aubioInput       != nullptr) { del_fvec (aubioInput);                 aubioInput       = nullptr; }
+    if (aubioOutput      != nullptr) { del_fvec (aubioOutput);                aubioOutput      = nullptr; }
+    if (aubioOnsetOut    != nullptr) { del_fvec (aubioOnsetOut);              aubioOnsetOut    = nullptr; }
+    if (aubioSpecdescOut != nullptr) { del_fvec (aubioSpecdescOut);           aubioSpecdescOut = nullptr; }
+    if (aubioGrain       != nullptr) { del_cvec (aubioGrain);                 aubioGrain       = nullptr; }
     aubio_cleanup();
 }
 
@@ -223,10 +231,11 @@ void DescriptorAnalyser::computeDissonance()
         windowBuffer[static_cast<size_t> (i)] = dissonanceRing[static_cast<size_t> (idx)];
     }
 
-    // Process frame by frame, accumulate dissonance.
+    // Process frame by frame, accumulate dissonance and spectral centroid.
     mirlib::realVector spectrumBuffer;
-    float total = 0.0f;
-    int   count = 0;
+    float dissonanceTotal = 0.0f;
+    float centroidTotal   = 0.0f;
+    int   count           = 0;
 
     for (int start = 0; start + frameSize <= windowSamples; start += hopSize)
     {
@@ -239,14 +248,22 @@ void DescriptorAnalyser::computeDissonance()
 
         dissonance.setInputBuffer (spectrumBuffer);
         dissonance.process();
+        dissonanceTotal += static_cast<float> (dissonance.getOutputValue());
 
-        total += static_cast<float> (dissonance.getOutputValue());
+        spectralCentroid.setInputBuffer (spectrumBuffer);
+        spectralCentroid.process();
+        centroidTotal += static_cast<float> (spectralCentroid.getOutputValue());
+
         ++count;
     }
 
     if (count > 0)
-        resultDissonance.store (total / static_cast<float> (count),
-                                std::memory_order_release);
+    {
+        resultDissonance .store (dissonanceTotal / static_cast<float> (count),
+                                 std::memory_order_release);
+        resultCentroidMIR.store (centroidTotal   / static_cast<float> (count),
+                                 std::memory_order_release);
+    }
 }
 
 //==============================================================================
@@ -413,6 +430,8 @@ void DescriptorAnalyser::processBTrack()
         resultAubioConfidence  .store (0.0f,   std::memory_order_release);
         resultAubioBeatTime    .store (-1.0e9, std::memory_order_release);
         resultAubioOnsetDensity.store (0.0f,   std::memory_order_release);
+        resultCentroidMIR      .store (0.0f,   std::memory_order_release);
+        resultCentroidAubio    .store (0.0f,   std::memory_order_release);
         aubioOnsetTimes.clear();
         btrackWasSilent  = true;
         aubioWasSilent   = true;
@@ -580,6 +599,9 @@ void DescriptorAnalyser::processAubio()
     const double nowMs    = juce::Time::getMillisecondCounterHiRes();
     const int    total44k = static_cast<int> (samples44k.size());
 
+    double centroidSumAubio   = 0.0;
+    int    centroidCountAubio = 0;
+
     for (int hopIdx = 0, start = 0; start + static_cast<int> (kAubioHopSize) <= total44k;
          start += static_cast<int> (kAubioHopSize), ++hopIdx)
     {
@@ -600,6 +622,19 @@ void DescriptorAnalyser::processAubio()
         if (fvec_get_sample (aubioOutput, 0) != 0.f)
             resultAubioBeatTime.store (hopWallMs, std::memory_order_release);
 
+        // ── Spectral centroid (aubio) ──────────────────────────────────────
+        if (aubioPvoc != nullptr && aubioSpecdesc != nullptr && aubioSpecdescOut != nullptr)
+        {
+            aubio_pvoc_do     (aubioPvoc,     aubioInput, aubioGrain);
+            fvec_zeros        (aubioSpecdescOut);
+            aubio_specdesc_do (aubioSpecdesc, aubioGrain, aubioSpecdescOut);
+            const float bin = fvec_get_sample (aubioSpecdescOut, 0);
+            const float hz  = aubio_bintofreq (bin, 44100.0f,
+                                               static_cast<float> (kAubioBufSize));
+            centroidSumAubio  += static_cast<double> (hz);
+            ++centroidCountAubio;
+        }
+
         // ── Onset density ─────────────────────────────────────────────────
         if (aubioOnset != nullptr && aubioOnsetOut != nullptr)
         {
@@ -617,6 +652,10 @@ void DescriptorAnalyser::processAubio()
         aubioOnsetTimes.pop_front();
 
     resultAubioOnsetDensity.store (static_cast<float> (aubioOnsetTimes.size()) / 2.0f,
+                                   std::memory_order_release);
+
+    if (centroidCountAubio > 0)
+        resultCentroidAubio.store (static_cast<float> (centroidSumAubio / centroidCountAubio),
                                    std::memory_order_release);
 
     const float bpm        = aubio_tempo_get_bpm        (aubioTempo);

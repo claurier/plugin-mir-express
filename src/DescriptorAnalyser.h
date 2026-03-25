@@ -9,6 +9,7 @@
 #include "PeakDetection.h"
 #include "BTrack.h"
 #include "beat_this_api.h"
+#include "SpectralCentroid.h"
 
 extern "C" {
 #include "aubio.h"
@@ -70,6 +71,8 @@ public:
     double getAubioBeatTime()     const noexcept { return resultAubioBeatTime    .load (std::memory_order_relaxed); }
     float  getAubioOnsetDensity() const noexcept { return resultAubioOnsetDensity.load (std::memory_order_relaxed); }
     float  getRMS()               const noexcept { return resultRMS              .load (std::memory_order_relaxed); }
+    float  getCentroidMIR()       const noexcept { return resultCentroidMIR     .load (std::memory_order_relaxed); }  // Hz
+    float  getCentroidAubio()     const noexcept { return resultCentroidAubio   .load (std::memory_order_relaxed); }  // Hz
 
 private:
     void run() override;
@@ -97,8 +100,10 @@ private:
     std::atomic<double> sampleRate { 44100.0 };
 
     // ── Results ───────────────────────────────────────────────────────────
-    std::atomic<float> resultRMS        { 0.0f };  // normalised dBFS, 0 = -60 dB, 1 = 0 dB
-    std::atomic<float> resultAngry      { 0.0f };
+    std::atomic<float> resultRMS           { 0.0f };  // normalised dBFS
+    std::atomic<float> resultCentroidMIR  { 0.0f };  // Hz
+    std::atomic<float> resultCentroidAubio{ 0.0f };  // Hz
+    std::atomic<float> resultAngry        { 0.0f };
     std::atomic<float> resultCalm       { 0.0f };
     std::atomic<float> resultHappy      { 0.0f };
     std::atomic<float> resultSad        { 0.0f };
@@ -111,9 +116,10 @@ private:
     std::atomic<double> resultBTrackBeatTime   { -1.0e9 };
 
     // All algorithm objects are only ever touched on the worker thread.
-    mirlib::ExtractorMood extractor;
-    mirlib::Spectrum      spectrum;
-    mirlib::Dissonance    dissonance;
+    mirlib::ExtractorMood    extractor;
+    mirlib::Spectrum         spectrum;
+    mirlib::Dissonance       dissonance;
+    mirlib::SpectralCentroid spectralCentroid;
     mirlib::OnsetFunction bpmOnsetFunction;  // stateful — call clear() before each window
 
     // BTrack — hop=512, frame=1024 (BTrack default; assumes 44100 Hz input)
@@ -140,6 +146,12 @@ private:
     std::atomic<float>  resultAubioConfidence  { 0.0f };
     std::atomic<double> resultAubioBeatTime    { -1.0e9 };
     std::atomic<float>  resultAubioOnsetDensity{ 0.0f };  // onsets per second, 2 s window
+
+    // aubio spectral centroid — phase vocoder + specdesc("centroid")
+    aubio_pvoc_t*       aubioPvoc        = nullptr;
+    cvec_t*             aubioGrain       = nullptr;  // complex FFT grain (buf_size/2+1 bins)
+    aubio_specdesc_t*   aubioSpecdesc    = nullptr;
+    fvec_t*             aubioSpecdescOut = nullptr;  // 1-sample output (bin)
 
     // aubio onset detector — reuses the same hop/buf sizes as the tempo tracker.
     aubio_onset_t*      aubioOnset      = nullptr;

@@ -89,9 +89,11 @@ void DescriptorDisplay::timerCallback()
                         ? static_cast<float> (1.0 - elapsed / kFlashDurationMs)
                         : 0.0f;
 
-    // Onset density and RMS: smooth like mood bars.
-    displayOnsetDensity += kMoodSmoothAlpha * (analyser.getAubioOnsetDensity() - displayOnsetDensity);
-    displayRMS          += kMoodSmoothAlpha * (analyser.getRMS()               - displayRMS);
+    // Onset density, RMS and centroids: smooth like mood bars.
+    displayOnsetDensity  += kMoodSmoothAlpha * (analyser.getAubioOnsetDensity() - displayOnsetDensity);
+    displayRMS           += kMoodSmoothAlpha * (analyser.getRMS()               - displayRMS);
+    displayCentroidMIR   += kMoodSmoothAlpha * (analyser.getCentroidMIR()       - displayCentroidMIR);
+    displayCentroidAubio += kMoodSmoothAlpha * (analyser.getCentroidAubio()     - displayCentroidAubio);
 
     // aubio: back-dated beat timestamps → direct flash, same pattern as BTrack.
     displayAubioBPM        = analyser.getAubioBPM();
@@ -393,4 +395,52 @@ void DescriptorDisplay::paint (juce::Graphics& g)
                     juce::Justification::centred);
     }
 
+    // ── Helper lambda: draw a centroid vertical bar in the bottom row ─────
+    // Normalised to kCentroidMaxHz: 0 Hz = empty, kCentroidMaxHz = full.
+    // Also shows the Hz value as a small overlay label.
+    constexpr float kCentroidMaxHz = 8000.0f;
+
+    auto drawCentroidBar = [&] (int pos, float centroidHz, juce::Colour colour, const char* label)
+    {
+        const float barX  = startX + static_cast<float> (pos) * stride;
+        const float lcx   = barX + barW * 0.5f;
+        const float barH2 = kDissonanceRowH - topPad - bottomPad;
+        const float val   = juce::jlimit (0.0f, 1.0f, centroidHz / kCentroidMaxHz);
+
+        // Background track
+        g.setColour (juce::Colour (0xff2e2e2e));
+        g.fillRoundedRectangle (barX, rowY + topPad, barW, barH2, 5.0f);
+
+        // Coloured fill (bottom-up)
+        if (val > 0.001f)
+        {
+            const float fillH = barH2 * val;
+            g.setColour (colour);
+            g.fillRoundedRectangle (barX, rowY + topPad + barH2 - fillH, barW, fillH, 5.0f);
+        }
+
+        // Label
+        const float labelY = rowY + topPad + barH2 + 8.0f;
+        g.setColour (juce::Colours::lightgrey);
+        g.setFont (juce::Font (11.0f).boldened());
+        g.drawText (label,
+                    juce::Rectangle<float> (lcx - labelW * 0.5f, labelY, labelW, labelH),
+                    juce::Justification::centred);
+
+        // Hz value (e.g. "3.2k")
+        const juce::String hzText = centroidHz >= 1000.0f
+                                    ? juce::String (centroidHz / 1000.0f, 1) + "k"
+                                    : juce::String (juce::roundToInt (centroidHz));
+        g.setColour (colour.brighter (0.3f));
+        g.setFont (juce::Font (10.0f));
+        g.drawText (hzText,
+                    juce::Rectangle<float> (lcx - labelW * 0.5f, labelY + labelH, labelW, valueH),
+                    juce::Justification::centred);
+    };
+
+    // ── Spectral Centroid MIRLib (position 5) ─────────────────────────────
+    drawCentroidBar (5, displayCentroidMIR,   juce::Colour (0xffffa040), "C.MIR");
+
+    // ── Spectral Centroid aubio (position 6) ──────────────────────────────
+    drawCentroidBar (6, displayCentroidAubio, juce::Colour (0xff40c0ff), "C.AUBIO");
 }
