@@ -159,6 +159,7 @@ target_link_libraries(MirExpress
         juce::juce_audio_utils   # AudioProcessor, AudioProcessorEditor, StandaloneWrapper…
         juce::juce_gui_extra     # Extra GUI utilities
         juce::juce_dsp           # FFT (used by BeatThis mel spectrogram)
+        juce::juce_osc           # OSC sender
         MIRLib                   # Mood analysis (ExtractorMood + SVM models)
         BTrack                   # Real-time beat tracking
         beat_this_static         # Neural beat tracker (experiment)

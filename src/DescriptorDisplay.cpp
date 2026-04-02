@@ -20,8 +20,8 @@ namespace
 }
 
 //==============================================================================
-DescriptorDisplay::DescriptorDisplay (DescriptorAnalyser& a)
-    : analyser (a)
+DescriptorDisplay::DescriptorDisplay (DescriptorAnalyser& a, OscManager& osc)
+    : analyser (a), oscManager (osc)
 {
     // Set up the ff_meters component with the custom look-and-feel.
     meter.setLookAndFeel (&meterLAF);
@@ -123,6 +123,36 @@ void DescriptorDisplay::timerCallback()
 
     // Spectral centroid: smooth like mood bars.
     displayCentroidMIR += kMoodSmoothAlpha * (analyser.getCentroidMIR() - displayCentroidMIR);
+
+    // ── OSC output ────────────────────────────────────────────────────────────
+    if (oscManager.isEnabled())
+    {
+        oscManager.sendFloat ("/mir/mood/angry", displayAngry);
+        oscManager.sendFloat ("/mir/mood/calm",  displayCalm);
+        oscManager.sendFloat ("/mir/mood/happy", displayHappy);
+        oscManager.sendFloat ("/mir/mood/sad",   displaySad);
+        oscManager.sendFloat ("/mir/dissonance", displayDissonance);
+
+        // Centroid normalised to [0, 1] using the same 4 kHz full-scale as the UI bar.
+        oscManager.sendFloat ("/mir/centroid", juce::jlimit (0.0f, 1.0f, displayCentroidMIR / 4000.0f));
+
+        // Tempo (BPM from BTrack, raw float).
+        oscManager.sendFloat ("/mir/tempo", displayBTrackBPM);
+
+        // Beat: send 1.0 only on the frame when a new beat is detected.
+        const double thisBeat = analyser.getBeatThisLastBeat();
+        if (thisBeat != lastOscBeatTime)
+        {
+            lastOscBeatTime = thisBeat;
+            oscManager.sendFloat ("/mir/beat", 1.0f);
+        }
+
+        // Level: peak from VU meter source, converted to dBFS then normalised [0, 1].
+        const float peak  = analyser.getMeterSource().getMaxLevel (0);
+        const float dBFS  = (peak > 0.0f) ? 20.0f * std::log10 (peak) : -60.0f;
+        const float level = juce::jlimit (0.0f, 1.0f, (dBFS + 60.0f) / 60.0f);
+        oscManager.sendFloat ("/mir/level", level);
+    }
 
     repaint();
 }

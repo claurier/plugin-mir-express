@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include "DescriptorAnalyser.h"
 #include "MirExpressLevelMeterLAF.h"
+#include "OscManager.h"
 
 //==============================================================================
 /**
@@ -19,7 +20,7 @@ class DescriptorDisplay final : public juce::Component,
                                 private juce::Timer
 {
 public:
-    explicit DescriptorDisplay (DescriptorAnalyser& analyser);
+    DescriptorDisplay (DescriptorAnalyser& analyser, OscManager& osc);
     ~DescriptorDisplay() override;
 
     void paint (juce::Graphics& g) override;
@@ -29,6 +30,7 @@ private:
     void timerCallback() override;
 
     DescriptorAnalyser& analyser;
+    OscManager&         oscManager;
 
     // ff_meters level meter with custom look-and-feel.
     MirExpressLevelMeterLAF meterLAF;
@@ -48,6 +50,9 @@ private:
     float  displayBeatThisBeat     = 0.0f;
 
     float  displayCentroidMIR     = 0.0f;  // Hz, smoothed
+
+    // Beat edge detection for OSC: track the last beat timestamp we sent.
+    double lastOscBeatTime = -1.0e9;
 
     // Mood bars:      alpha ≈ 0.15 at 30 fps  → ~200 ms response.
     // Dissonance bar: alpha ≈ 0.25 at 30 fps  → ~120 ms response (slightly faster).
