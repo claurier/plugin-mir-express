@@ -9,7 +9,7 @@
 	url = https://github.com/adamstark/BTrack
 [submodule "libs/beat_this_cpp"]
 	path = libs/beat_this_cpp
-	url = https://github.com/mosynthkey/beat_this_cpp
+	url = https://github.com/claurier/beat_this_cpp
 [submodule "libs/ff_meters"]
 	path = libs/ff_meters
 	url = https://github.com/ffAudio/ff_meters
