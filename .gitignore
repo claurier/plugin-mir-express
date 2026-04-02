@@ -24,3 +24,10 @@ JuceLibraryCode/
 *.vst3
 *.component
 *.app
+
+# ── Large model files (not version-controlled) ────────────────────
+libs/essentia_models/
+
+# ── Scratch files ─────────────────────────────────────────────────
+tmp.txt
+notes/

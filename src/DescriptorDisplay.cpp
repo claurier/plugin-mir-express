@@ -9,12 +9,11 @@ namespace
         juce::Colour  colour;
     };
 
-    const std::array<MoodBar, 5> kBars {{
+    const std::array<MoodBar, 4> kBars {{
         { "ANGRY",   juce::Colour (0xffe05252) },  // red
         { "CALM",    juce::Colour (0xff5285e0) },  // blue
         { "HAPPY",   juce::Colour (0xffe0c052) },  // warm yellow
         { "SAD",     juce::Colour (0xff7b52e0) },  // purple
-        { "RMS",     juce::Colour (0xffcccccc) },  // light gray (level)
     }};
 
     const juce::Colour kDissonanceColour { 0xff555555 };  // dark gray
@@ -24,12 +23,45 @@ namespace
 DescriptorDisplay::DescriptorDisplay (DescriptorAnalyser& a)
     : analyser (a)
 {
+    // Set up the ff_meters component with the custom look-and-feel.
+    meter.setLookAndFeel (&meterLAF);
+    meter.setMeterSource (&analyser.getMeterSource());
+    meter.setRefreshRateHz (30);
+    meter.setFixedNumChannels (1);  // single-bar display matching the mood bar style
+    addAndMakeVisible (meter);
+
     startTimerHz (kTimerHz);
 }
 
 DescriptorDisplay::~DescriptorDisplay()
 {
+    meter.setLookAndFeel (nullptr);
     stopTimer();
+}
+
+//==============================================================================
+void DescriptorDisplay::resized()
+{
+    const float w     = static_cast<float> (getWidth());
+    const float h     = static_cast<float> (getHeight());
+    const float moodH = h - kDissonanceRowH;
+
+    // Slot 4 — same geometry as the mood bars in paint().
+    const float sectionW  = w / 5.0f;
+    const float barW      = sectionW * 0.55f;
+    const float gap       = (sectionW - barW) * 0.5f;
+    const float stride    = sectionW;
+    const float startX    = gap;
+    const float topPad    = 18.0f;
+    const float labelH    = 16.0f;
+    const float valueH    = 14.0f;
+    const float bottomPad = labelH + valueH + 10.0f;
+    const float barH      = moodH - topPad - bottomPad;
+
+    meter.setBounds (juce::roundToInt (startX + 4.0f * stride),
+                     juce::roundToInt (topPad),
+                     juce::roundToInt (barW),
+                     juce::roundToInt (barH + bottomPad));
 }
 
 //==============================================================================
@@ -89,23 +121,8 @@ void DescriptorDisplay::timerCallback()
                         ? static_cast<float> (1.0 - elapsed / kFlashDurationMs)
                         : 0.0f;
 
-    // Onset density, RMS and centroids: smooth like mood bars.
-    displayOnsetDensity  += kMoodSmoothAlpha * (analyser.getAubioOnsetDensity() - displayOnsetDensity);
-    displayRMS           += kMoodSmoothAlpha * (analyser.getRMS()               - displayRMS);
-    displayCentroidMIR   += kMoodSmoothAlpha * (analyser.getCentroidMIR()       - displayCentroidMIR);
-    displayCentroidAubio += kMoodSmoothAlpha * (analyser.getCentroidAubio()     - displayCentroidAubio);
-
-    // aubio: back-dated beat timestamps → direct flash, same pattern as BTrack.
-    displayAubioBPM        = analyser.getAubioBPM();
-    displayAubioConfidence = analyser.getAubioConfidence();
-    {
-        constexpr double kFlashDurationMs = 500.0;
-        const double beatTime = analyser.getAubioBeatTime();
-        const double elapsed  = juce::Time::getMillisecondCounterHiRes() - beatTime;
-        displayAubioBeat = (elapsed >= 0.0 && elapsed < kFlashDurationMs)
-                           ? static_cast<float> (1.0 - elapsed / kFlashDurationMs)
-                           : 0.0f;
-    }
+    // Spectral centroid: smooth like mood bars.
+    displayCentroidMIR += kMoodSmoothAlpha * (analyser.getCentroidMIR() - displayCentroidMIR);
 
     repaint();
 }
@@ -125,12 +142,11 @@ void DescriptorDisplay::paint (juce::Graphics& g)
 
     // ── Mood bars (top portion) ───────────────────────────────────────────
     const float moodH    = h - kDissonanceRowH;
-    const int   numBars  = 5;
-    const float sectionW = w / static_cast<float> (numBars);
-    const float barW      = sectionW * 0.38f;
-    const float gap       = (sectionW - barW) * 0.5f;
-    const float stride    = barW + gap;
-    const float startX    = gap;
+    const float sectionW = w / 5.0f;
+    const float barW     = sectionW * 0.55f;
+    const float gap      = (sectionW - barW) * 0.5f;
+    const float stride   = sectionW;   // one full section per bar → equal margins
+    const float startX   = gap;
     const float labelW    = stride;
     const float topPad    = 18.0f;
     const float labelH    = 16.0f;
@@ -138,15 +154,16 @@ void DescriptorDisplay::paint (juce::Graphics& g)
     const float bottomPad = labelH + valueH + 10.0f;
     const float barH      = moodH - topPad - bottomPad;
 
-    const std::array<float, 5> values {
-        displayAngry, displayCalm, displayHappy, displaySad, displayRMS
+    const std::array<float, 4> moodValues {
+        displayAngry, displayCalm, displayHappy, displaySad
     };
 
-    for (int i = 0; i < numBars; ++i)
+    // ── Mood bars 0–3 (ANGRY / CALM / HAPPY / SAD) ───────────────────────
+    for (int i = 0; i < 4; ++i)
     {
         const float barX  = startX + static_cast<float> (i) * stride;
-        const float lcx   = barX + barW * 0.5f;   // label centre x
-        const float value = juce::jlimit (0.0f, 1.0f, values[i]);
+        const float lcx   = barX + barW * 0.5f;
+        const float value = juce::jlimit (0.0f, 1.0f, moodValues[static_cast<size_t> (i)]);
 
         // Background track
         g.setColour (juce::Colour (0xff2e2e2e));
@@ -156,20 +173,18 @@ void DescriptorDisplay::paint (juce::Graphics& g)
         if (value > 0.001f)
         {
             const float fillH = barH * value;
-            g.setColour (kBars[i].colour);
+            g.setColour (kBars[static_cast<size_t> (i)].colour);
             g.fillRoundedRectangle (barX, topPad + barH - fillH, barW, fillH, 5.0f);
         }
 
-        // Mood label — centred under the bar
         const float labelY = topPad + barH + 8.0f;
         g.setColour (juce::Colours::lightgrey);
         g.setFont (juce::Font (11.0f).boldened());
-        g.drawText (kBars[i].label,
+        g.drawText (kBars[static_cast<size_t> (i)].label,
                     juce::Rectangle<float> (lcx - labelW * 0.5f, labelY, labelW, labelH),
                     juce::Justification::centred);
 
-        // Numeric percentage
-        g.setColour (kBars[i].colour.brighter (0.3f));
+        g.setColour (kBars[static_cast<size_t> (i)].colour.brighter (0.3f));
         g.setFont (juce::Font (10.0f));
         g.drawText (juce::String (juce::roundToInt (value * 100.0f)) + "%",
                     juce::Rectangle<float> (lcx - labelW * 0.5f, labelY + labelH, labelW, valueH),
@@ -183,235 +198,17 @@ void DescriptorDisplay::paint (juce::Graphics& g)
     g.setColour (juce::Colour (0xff303030));
     g.drawHorizontalLine (static_cast<int> (rowY), 0.0f, w);
 
-    // Dissonance bar: same x as ANGRY bar (startX), same layout constants → identical size.
-    const float dBarH  = kDissonanceRowH - topPad - bottomPad;
-    const float dValue = juce::jlimit (0.0f, 1.0f, displayDissonance);
-    const float dlcx   = startX + barW * 0.5f;   // label centre x (same as ANGRY)
-
-    // Background track
-    g.setColour (juce::Colour (0xff2e2e2e));
-    g.fillRoundedRectangle (startX, rowY + topPad, barW, dBarH, 5.0f);
-
-    // Dark-gray fill (bottom-up)
-    if (dValue > 0.001f)
-    {
-        const float fillH = dBarH * dValue;
-        g.setColour (kDissonanceColour);
-        g.fillRoundedRectangle (startX, rowY + topPad + dBarH - fillH, barW, fillH, 5.0f);
-    }
-
-    // Label — centred under the bar, same y-offset as mood labels
-    const float dLabelY = rowY + topPad + dBarH + 8.0f;
-    g.setColour (juce::Colours::lightgrey);
-    g.setFont (juce::Font (11.0f).boldened());
-    g.drawText ("DISSONANCE",
-                juce::Rectangle<float> (dlcx - labelW * 0.5f, dLabelY, labelW, labelH),
-                juce::Justification::centred);
-
-    // Numeric percentage
-    g.setColour (kDissonanceColour.brighter (0.4f));
-    g.setFont (juce::Font (10.0f));
-    g.drawText (juce::String (juce::roundToInt (dValue * 100.0f)) + "%",
-                juce::Rectangle<float> (dlcx - labelW * 0.5f, dLabelY + labelH, labelW, valueH),
-                juce::Justification::centred);
-
-    // ── Onset Density bar (second position in the dissonance row, under CALM) ──
-    {
-        const float dnsBarX = startX + stride;
-        const float dnsLcx  = dnsBarX + barW * 0.5f;
-        const float dnsH    = kDissonanceRowH - topPad - bottomPad;
-        const float dnsVal  = juce::jlimit (0.0f, 1.0f, displayOnsetDensity / 10.0f);
-        const juce::Colour dnsColour (0xff52e08a);  // green
-
-        // Background track
-        g.setColour (juce::Colour (0xff2e2e2e));
-        g.fillRoundedRectangle (dnsBarX, rowY + topPad, barW, dnsH, 5.0f);
-
-        // Coloured fill (bottom-up)
-        if (dnsVal > 0.001f)
-        {
-            const float fillH = dnsH * dnsVal;
-            g.setColour (dnsColour);
-            g.fillRoundedRectangle (dnsBarX, rowY + topPad + dnsH - fillH, barW, fillH, 5.0f);
-        }
-
-        // Label and percentage
-        const float dnsLabelY = rowY + topPad + dnsH + 8.0f;
-        g.setColour (juce::Colours::lightgrey);
-        g.setFont (juce::Font (11.0f).boldened());
-        g.drawText ("DENSITY",
-                    juce::Rectangle<float> (dnsLcx - labelW * 0.5f, dnsLabelY, labelW, labelH),
-                    juce::Justification::centred);
-
-        g.setColour (dnsColour.brighter (0.3f));
-        g.setFont (juce::Font (10.0f));
-        g.drawText (juce::String (juce::roundToInt (dnsVal * 100.0f)) + "%",
-                    juce::Rectangle<float> (dnsLcx - labelW * 0.5f, dnsLabelY + labelH, labelW, valueH),
-                    juce::Justification::centred);
-    }
-
-    // ── BTrack readout (third position in the dissonance row) ────────────
-    {
-        const float btBarX = startX + 2.0f * stride;
-        const float btCX   = btBarX + barW * 0.5f;
-
-        // Beat flash circle — drawn above the "BTRACK" label.
-        // The circle fades from amber to transparent over 150 ms.
-        const float circleR  = 8.0f;
-        const float circleCY = rowY + kDissonanceRowH * 0.5f - 46.0f;
-        if (displayBTrackBeat > 0.001f)
-        {
-            const juce::Colour amber (0xffe08852);
-            g.setColour (amber.withAlpha (displayBTrackBeat));
-            g.fillEllipse (btCX - circleR, circleCY - circleR,
-                           circleR * 2.0f, circleR * 2.0f);
-        }
-        // Outline always visible (subtle)
-        g.setColour (juce::Colour (0xff555555));
-        g.drawEllipse (btCX - circleR, circleCY - circleR,
-                       circleR * 2.0f, circleR * 2.0f, 1.0f);
-
-        const float btMidY = rowY + kDissonanceRowH * 0.5f;
-
-        // "BTRACK" label
-        g.setColour (juce::Colours::lightgrey);
-        g.setFont (juce::Font (11.0f).boldened());
-        g.drawText ("BTRACK",
-                    juce::Rectangle<float> (btCX - labelW * 0.5f, btMidY - 34.0f, labelW, 16.0f),
-                    juce::Justification::centred);
-
-        // Large numeric value (amber)
-        const juce::String btText = (displayBTrackBPM > 0.0f)
-                                    ? juce::String (juce::roundToInt (displayBTrackBPM))
-                                    : "--";
-        g.setColour (juce::Colour (0xffe08852));   // amber
-        g.setFont (juce::Font (38.0f).boldened());
-        g.drawText (btText,
-                    juce::Rectangle<float> (btCX - labelW * 0.5f, btMidY - 18.0f, labelW, 44.0f),
-                    juce::Justification::centred);
-    }
-
-    // ── beat_this readout (fourth position in the dissonance row) ────────
-    {
-        const float btBarX = startX + 3.0f * stride;
-        const float btCX   = btBarX + barW * 0.5f;
-
-        // Beat flash circle — fades over 100 ms, driven by BPM extrapolation.
-        const float circleR  = 8.0f;
-        const float circleCY = rowY + kDissonanceRowH * 0.5f - 46.0f;
-        if (displayBeatThisBeat > 0.001f)
-        {
-            const juce::Colour teal (0xff52e0c8);
-            g.setColour (teal.withAlpha (displayBeatThisBeat));
-            g.fillEllipse (btCX - circleR, circleCY - circleR,
-                           circleR * 2.0f, circleR * 2.0f);
-        }
-        g.setColour (juce::Colour (0xff555555));
-        g.drawEllipse (btCX - circleR, circleCY - circleR,
-                       circleR * 2.0f, circleR * 2.0f, 1.0f);
-
-        const float btMidY = rowY + kDissonanceRowH * 0.5f;
-
-        // "BEAT THIS" label
-        g.setColour (juce::Colours::lightgrey);
-        g.setFont (juce::Font (11.0f).boldened());
-        g.drawText ("BEAT THIS",
-                    juce::Rectangle<float> (btCX - labelW * 0.5f, btMidY - 34.0f, labelW, 16.0f),
-                    juce::Justification::centred);
-
-        // Large numeric BPM value (teal)
-        const juce::String btText = (displayBeatThisBPM > 0.0f)
-                                    ? juce::String (juce::roundToInt (displayBeatThisBPM))
-                                    : "--";
-        g.setColour (juce::Colour (0xff52e0c8));
-        g.setFont (juce::Font (38.0f).boldened());
-        g.drawText (btText,
-                    juce::Rectangle<float> (btCX - labelW * 0.5f, btMidY - 18.0f, labelW, 44.0f),
-                    juce::Justification::centred);
-    }
-
-    // ── aubio readout (fifth position in the dissonance row) ─────────────
-    {
-        const float abBarX = startX + 4.0f * stride;
-        const float abCX   = abBarX + barW * 0.5f;
-
-        // Beat flash circle
-        const float circleR  = 8.0f;
-        const float circleCY = rowY + kDissonanceRowH * 0.5f - 46.0f;
-        if (displayAubioBeat > 0.001f)
-        {
-            const juce::Colour orange (0xffe08040);
-            g.setColour (orange.withAlpha (displayAubioBeat));
-            g.fillEllipse (abCX - circleR, circleCY - circleR,
-                           circleR * 2.0f, circleR * 2.0f);
-        }
-        g.setColour (juce::Colour (0xff555555));
-        g.drawEllipse (abCX - circleR, circleCY - circleR,
-                       circleR * 2.0f, circleR * 2.0f, 1.0f);
-
-        const float abMidY = rowY + kDissonanceRowH * 0.5f;
-
-        // "AUBIO" label
-        g.setColour (juce::Colours::lightgrey);
-        g.setFont (juce::Font (11.0f).boldened());
-        g.drawText ("AUBIO",
-                    juce::Rectangle<float> (abCX - labelW * 0.5f, abMidY - 34.0f, labelW, 16.0f),
-                    juce::Justification::centred);
-
-        // Large BPM value (orange)
-        const juce::String abText = (displayAubioBPM > 0.0f)
-                                    ? juce::String (juce::roundToInt (displayAubioBPM))
-                                    : "--";
-        g.setColour (juce::Colour (0xffe08040));
-        g.setFont (juce::Font (38.0f).boldened());
-        g.drawText (abText,
-                    juce::Rectangle<float> (abCX - labelW * 0.5f, abMidY - 18.0f, labelW, 44.0f),
-                    juce::Justification::centred);
-
-        // Confidence bar (same layout as TempoTap confidence)
-        const float confBarY = abMidY + 30.0f;
-        const float confBarW = labelW * 0.8f;
-        const float confBarH = 4.0f;
-        const float confBarX = abCX - confBarW * 0.5f;
-        const float confVal  = juce::jlimit (0.0f, 1.0f, displayAubioConfidence);
-
-        g.setColour (juce::Colour (0xff2e2e2e));
-        g.fillRoundedRectangle (confBarX, confBarY, confBarW, confBarH, 2.0f);
-
-        if (confVal > 0.0f)
-        {
-            const float dist = std::abs (displayAubioConfidence - 1.0f);
-            const juce::Colour confColour = dist < 0.25f ? juce::Colour (0xff52e08a)
-                                           : dist < 0.60f ? juce::Colour (0xffe0c052)
-                                                          : juce::Colour (0xffe05252);
-            g.setColour (confColour);
-            g.fillRoundedRectangle (confBarX, confBarY, confBarW * confVal, confBarH, 2.0f);
-        }
-
-        g.setColour (juce::Colour (0xff888888));
-        g.setFont (juce::Font (10.0f));
-        g.drawText (juce::String (juce::roundToInt (displayAubioConfidence * 100.0f)) + "%",
-                    juce::Rectangle<float> (abCX - labelW * 0.5f, confBarY + confBarH + 3.0f, labelW, 12.0f),
-                    juce::Justification::centred);
-    }
-
     // ── Helper lambda: draw a centroid vertical bar in the bottom row ─────
-    // Normalised to kCentroidMaxHz: 0 Hz = empty, kCentroidMaxHz = full.
-    // Also shows the Hz value as a small overlay label.
-    constexpr float kCentroidMaxHz = 8000.0f;
-
-    auto drawCentroidBar = [&] (int pos, float centroidHz, juce::Colour colour, const char* label)
+    auto drawCentroidBar = [&] (int pos, float centroidHz, float maxHz, juce::Colour colour, const char* label)
     {
         const float barX  = startX + static_cast<float> (pos) * stride;
         const float lcx   = barX + barW * 0.5f;
         const float barH2 = kDissonanceRowH - topPad - bottomPad;
-        const float val   = juce::jlimit (0.0f, 1.0f, centroidHz / kCentroidMaxHz);
+        const float val   = juce::jlimit (0.0f, 1.0f, centroidHz / maxHz);
 
-        // Background track
         g.setColour (juce::Colour (0xff2e2e2e));
         g.fillRoundedRectangle (barX, rowY + topPad, barW, barH2, 5.0f);
 
-        // Coloured fill (bottom-up)
         if (val > 0.001f)
         {
             const float fillH = barH2 * val;
@@ -419,7 +216,6 @@ void DescriptorDisplay::paint (juce::Graphics& g)
             g.fillRoundedRectangle (barX, rowY + topPad + barH2 - fillH, barW, fillH, 5.0f);
         }
 
-        // Label
         const float labelY = rowY + topPad + barH2 + 8.0f;
         g.setColour (juce::Colours::lightgrey);
         g.setFont (juce::Font (11.0f).boldened());
@@ -427,7 +223,6 @@ void DescriptorDisplay::paint (juce::Graphics& g)
                     juce::Rectangle<float> (lcx - labelW * 0.5f, labelY, labelW, labelH),
                     juce::Justification::centred);
 
-        // Hz value (e.g. "3.2k")
         const juce::String hzText = centroidHz >= 1000.0f
                                     ? juce::String (centroidHz / 1000.0f, 1) + "k"
                                     : juce::String (juce::roundToInt (centroidHz));
@@ -438,9 +233,89 @@ void DescriptorDisplay::paint (juce::Graphics& g)
                     juce::Justification::centred);
     };
 
-    // ── Spectral Centroid MIRLib (position 5) ─────────────────────────────
-    drawCentroidBar (5, displayCentroidMIR,   juce::Colour (0xffffa040), "C.MIR");
+    // ── Dissonance bar (position 0) ───────────────────────────────────────
+    {
+        const float dBarX  = startX + 0.0f * stride;
+        const float dBarH  = kDissonanceRowH - topPad - bottomPad;
+        const float dValue = juce::jlimit (0.0f, 1.0f, displayDissonance);
+        const float dlcx   = dBarX + barW * 0.5f;
 
-    // ── Spectral Centroid aubio (position 6) ──────────────────────────────
-    drawCentroidBar (6, displayCentroidAubio, juce::Colour (0xff40c0ff), "C.AUBIO");
+        g.setColour (juce::Colour (0xff2e2e2e));
+        g.fillRoundedRectangle (dBarX, rowY + topPad, barW, dBarH, 5.0f);
+
+        if (dValue > 0.001f)
+        {
+            const float fillH = dBarH * dValue;
+            g.setColour (kDissonanceColour);
+            g.fillRoundedRectangle (dBarX, rowY + topPad + dBarH - fillH, barW, fillH, 5.0f);
+        }
+
+        const float dLabelY = rowY + topPad + dBarH + 8.0f;
+        g.setColour (juce::Colours::lightgrey);
+        g.setFont (juce::Font (11.0f).boldened());
+        g.drawText ("DISSONANCE",
+                    juce::Rectangle<float> (dlcx - labelW * 0.5f, dLabelY, labelW, labelH),
+                    juce::Justification::centred);
+
+        g.setColour (kDissonanceColour.brighter (0.4f));
+        g.setFont (juce::Font (10.0f));
+        g.drawText (juce::String (juce::roundToInt (dValue * 100.0f)) + "%",
+                    juce::Rectangle<float> (dlcx - labelW * 0.5f, dLabelY + labelH, labelW, valueH),
+                    juce::Justification::centred);
+    }
+
+    // ── Centroid bar (position 1) ─────────────────────────────────────────
+    drawCentroidBar (1, displayCentroidMIR, 4000.0f, juce::Colour (0xffffa040), "CENTROID");
+
+    // ── Tempo readout — BTrack BPM (position 2, no beat pulse) ───────────
+    {
+        const float tBarX = startX + 2.0f * stride;
+        const float tCX   = tBarX + barW * 0.5f;
+        const float tMidY = rowY + kDissonanceRowH * 0.5f;
+
+        g.setColour (juce::Colours::lightgrey);
+        g.setFont (juce::Font (11.0f).boldened());
+        g.drawText ("TEMPO",
+                    juce::Rectangle<float> (tCX - labelW * 0.5f, tMidY - 34.0f, labelW, 16.0f),
+                    juce::Justification::centred);
+
+        const juce::String tText = (displayBTrackBPM > 0.0f)
+                                   ? juce::String (juce::roundToInt (displayBTrackBPM))
+                                   : "--";
+        g.setColour (juce::Colour (0xffe08852));   // amber
+        g.setFont (juce::Font (38.0f).boldened());
+        g.drawText (tText,
+                    juce::Rectangle<float> (tCX - labelW * 0.5f, tMidY - 18.0f, labelW, 44.0f),
+                    juce::Justification::centred);
+    }
+
+    // ── Beat readout — BeatThis pulse + BPM (position 3) ─────────────────
+    {
+        const float bBarX = startX + 3.0f * stride;
+        const float bCX   = bBarX + barW * 0.5f;
+
+        const float bMidY = rowY + kDissonanceRowH * 0.5f;
+
+        // "BEAT" label — same vertical position as the other section labels
+        g.setColour (juce::Colours::lightgrey);
+        g.setFont (juce::Font (11.0f).boldened());
+        g.drawText ("BEAT",
+                    juce::Rectangle<float> (bCX - labelW * 0.5f, bMidY - 34.0f, labelW, 16.0f),
+                    juce::Justification::centred);
+
+        // Circle diameter matches the tempo font size (38px) → radius = 19.
+        // Centred at the same y as the tempo number centre (bMidY - 18 + 44/2 = bMidY + 4).
+        const float circleR  = 15.0f;
+        const float circleCY = bMidY + 4.0f;
+        if (displayBeatThisBeat > 0.001f)
+        {
+            const juce::Colour teal (0xff52e0c8);
+            g.setColour (teal.withAlpha (displayBeatThisBeat));
+            g.fillEllipse (bCX - circleR, circleCY - circleR,
+                           circleR * 2.0f, circleR * 2.0f);
+        }
+        g.setColour (juce::Colour (0xff555555));
+        g.drawEllipse (bCX - circleR, circleCY - circleR,
+                       circleR * 2.0f, circleR * 2.0f, 1.0f);
+    }
 }

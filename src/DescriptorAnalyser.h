@@ -10,14 +10,8 @@
 #include "BTrack.h"
 #include "beat_this_api.h"
 #include "SpectralCentroid.h"
-
-extern "C" {
-#include "aubio.h"
-}
-
 #include <array>
 #include <atomic>
-#include <deque>
 #include <memory>
 #include <vector>
 
@@ -66,23 +60,18 @@ public:
     double getBTrackBeatTime()  const noexcept { return resultBTrackBeatTime.load (std::memory_order_relaxed); }
     float  getBeatThisBPM()      const noexcept { return resultBeatThisBPM      .load (std::memory_order_relaxed); }
     double getBeatThisLastBeat() const noexcept { return resultBeatThisLastBeat .load (std::memory_order_relaxed); }
-    float  getAubioBPM()          const noexcept { return resultAubioBPM         .load (std::memory_order_relaxed); }
-    float  getAubioConfidence()   const noexcept { return resultAubioConfidence  .load (std::memory_order_relaxed); }
-    double getAubioBeatTime()     const noexcept { return resultAubioBeatTime    .load (std::memory_order_relaxed); }
-    float  getAubioOnsetDensity() const noexcept { return resultAubioOnsetDensity.load (std::memory_order_relaxed); }
-    float  getRMS()               const noexcept { return resultRMS              .load (std::memory_order_relaxed); }
     float  getCentroidMIR()       const noexcept { return resultCentroidMIR     .load (std::memory_order_relaxed); }  // Hz
-    float  getCentroidAubio()     const noexcept { return resultCentroidAubio   .load (std::memory_order_relaxed); }  // Hz
+
+    /** The ff_meters source fed from pushSamples() — hand to a foleys::LevelMeter. */
+    foleys::LevelMeterSource& getMeterSource() noexcept { return meterSource; }
 
 private:
     void run() override;
     void computeMood();
     void computeDissonance();
-    void computeRMS();
     void computeBPM();
     void processBTrack();
     void computeBeatThis();
-    void processAubio();
 
     // ── Mood ring buffer (3 s at max 192 kHz) ─────────────────────────────
     static constexpr int kRingSize = 3 * 192000;
@@ -100,9 +89,7 @@ private:
     std::atomic<double> sampleRate { 44100.0 };
 
     // ── Results ───────────────────────────────────────────────────────────
-    std::atomic<float> resultRMS           { 0.0f };  // normalised dBFS
     std::atomic<float> resultCentroidMIR  { 0.0f };  // Hz
-    std::atomic<float> resultCentroidAubio{ 0.0f };  // Hz
     std::atomic<float> resultAngry        { 0.0f };
     std::atomic<float> resultCalm       { 0.0f };
     std::atomic<float> resultHappy      { 0.0f };
@@ -135,31 +122,8 @@ private:
     std::atomic<float>  resultBeatThisBPM      { 0.0f };
     std::atomic<double> resultBeatThisLastBeat { -1.0e9 };
 
-    // aubio — real-time tempo + beat tracker
-    // Raw C pointers; created/destroyed explicitly (aubio has no C++ RAII).
-    aubio_tempo_t*      aubioTempo      = nullptr;
-    fvec_t*             aubioInput      = nullptr;  // hop_size samples
-    fvec_t*             aubioOutput     = nullptr;  // 2 samples (beat flag + unused)
-    int                 aubioReadPos    = 0;         // worker thread only
-    bool                aubioWasSilent  = true;
-    std::atomic<float>  resultAubioBPM         { 0.0f };
-    std::atomic<float>  resultAubioConfidence  { 0.0f };
-    std::atomic<double> resultAubioBeatTime    { -1.0e9 };
-    std::atomic<float>  resultAubioOnsetDensity{ 0.0f };  // onsets per second, 2 s window
-
-    // aubio spectral centroid — phase vocoder + specdesc("centroid")
-    aubio_pvoc_t*       aubioPvoc        = nullptr;
-    cvec_t*             aubioGrain       = nullptr;  // complex FFT grain (buf_size/2+1 bins)
-    aubio_specdesc_t*   aubioSpecdesc    = nullptr;
-    fvec_t*             aubioSpecdescOut = nullptr;  // 1-sample output (bin)
-
-    // aubio onset detector — reuses the same hop/buf sizes as the tempo tracker.
-    aubio_onset_t*      aubioOnset      = nullptr;
-    fvec_t*             aubioOnsetOut   = nullptr;  // 1-sample output (onset flag)
-    std::deque<double>  aubioOnsetTimes;            // back-dated wall-clock timestamps (ms)
-
-    static constexpr uint_t kAubioHopSize = 512;
-    static constexpr uint_t kAubioBufSize = 1024;
+    // ── ff_meters level source (audio thread writes, message thread reads) ──
+    foleys::LevelMeterSource meterSource;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DescriptorAnalyser)
 };

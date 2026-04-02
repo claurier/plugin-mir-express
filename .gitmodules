@@ -10,6 +10,6 @@
 [submodule "libs/beat_this_cpp"]
 	path = libs/beat_this_cpp
 	url = https://github.com/mosynthkey/beat_this_cpp
-[submodule "libs/aubio"]
-	path = libs/aubio
-	url = https://github.com/aubio/aubio
+[submodule "libs/ff_meters"]
+	path = libs/ff_meters
+	url = https://github.com/ffAudio/ff_meters

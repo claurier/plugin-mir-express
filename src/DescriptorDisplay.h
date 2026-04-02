@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include "DescriptorAnalyser.h"
+#include "MirExpressLevelMeterLAF.h"
 
 //==============================================================================
 /**
@@ -22,11 +23,16 @@ public:
     ~DescriptorDisplay() override;
 
     void paint (juce::Graphics& g) override;
+    void resized() override;
 
 private:
     void timerCallback() override;
 
     DescriptorAnalyser& analyser;
+
+    // ff_meters level meter with custom look-and-feel.
+    MirExpressLevelMeterLAF meterLAF;
+    foleys::LevelMeter      meter { foleys::LevelMeter::Default };
 
     // Smoothed display values (message thread only).
     float displayAngry      = 0.0f;
@@ -41,15 +47,7 @@ private:
     double displayBeatThisLastBeat = -1.0e9;
     float  displayBeatThisBeat     = 0.0f;
 
-    float  displayAubioBPM        = 0.0f;
-    float  displayAubioConfidence = 0.0f;
-    double displayAubioBeatTime   = -1.0e9;
-    float  displayAubioBeat       = 0.0f;  // 0..1 flash intensity
-
-    float  displayOnsetDensity    = 0.0f;  // onsets / s, smoothed
-    float  displayRMS             = 0.0f;  // normalised dBFS, smoothed
     float  displayCentroidMIR     = 0.0f;  // Hz, smoothed
-    float  displayCentroidAubio   = 0.0f;  // Hz, smoothed
 
     // Mood bars:      alpha ≈ 0.15 at 30 fps  → ~200 ms response.
     // Dissonance bar: alpha ≈ 0.25 at 30 fps  → ~120 ms response (slightly faster).
@@ -60,7 +58,7 @@ private:
     // Multiply by this factor to map to a [0, 1] display range.
     static constexpr float kDissonanceDisplayScale = 5.0f;
 
-    // Height of the dissonance row at the bottom of this component.
+    // Height of the dissonance row (beat / centroid / descriptor panel).
     static constexpr float kDissonanceRowH = 225.0f;
 
     static constexpr int kTimerHz = 30;

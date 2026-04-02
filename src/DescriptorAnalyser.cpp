@@ -1,6 +1,6 @@
 #include "DescriptorAnalyser.h"
+#include "OrtEnvSingleton.h"
 
-// aubio.h is already included via DescriptorAnalyser.h
 #include "Types.h"       // mirlib::realVector = std::vector<float>
 #include <samplerate.h>  // libsamplerate — src_simple()
 #include <cmath>
@@ -13,54 +13,29 @@ DescriptorAnalyser::DescriptorAnalyser()
     bpmOnsetFunction.parameterSize = 2048 / 2 + 1;
     bpmOnsetFunction.setup();
 
-    // Attempt to load the beat_this ONNX model. The path is baked in at compile time
-    // (BEAT_THIS_ONNX_PATH). If the file is missing or the ONNX session fails to
-    // initialise, beatThisProcessor stays null and beat_this is silently disabled.
-    // Create aubio tempo tracker (44100 Hz nominal; recreated on sample-rate change).
-    aubioTempo       = new_aubio_tempo    ("default",  kAubioBufSize, kAubioHopSize, 44100);
-    aubioInput       = new_fvec           (kAubioHopSize);
-    aubioOutput      = new_fvec           (2);
-    aubioOnset       = new_aubio_onset    ("complex",  kAubioBufSize, kAubioHopSize, 44100);
-    aubioOnsetOut    = new_fvec           (1);
-    aubioPvoc        = new_aubio_pvoc     (kAubioBufSize, kAubioHopSize);
-    aubioGrain       = new_cvec           (kAubioBufSize);
-    aubioSpecdesc    = new_aubio_specdesc ("centroid", kAubioBufSize);
-    aubioSpecdescOut = new_fvec           (1);
-    if (aubioTempo != nullptr)
-        aubio_tempo_set_silence (aubioTempo, -60.f);  // built-in silence gate at -60 dB
 
-#ifdef BEAT_THIS_ONNX_PATH
-    try
-    {
-        beatThisProcessor = std::make_unique<BeatThis::BeatThis> (BEAT_THIS_ONNX_PATH);
-    }
-    catch (const std::exception& e)
-    {
-        DBG ("beat_this init failed: " << e.what());
-        beatThisProcessor = nullptr;
-    }
-    catch (...)
-    {
-        DBG ("beat_this init failed: unknown error");
-        beatThisProcessor = nullptr;
-    }
-#endif
+// ── ORT models are NOT loaded here ────────────────────────────────────────
+// BeatThis is constructed on the worker thread
+// (in run()) to avoid touching the ORT C++ API on the main thread.
+//
+// Root cause: Ort::Global<void>::api_ is a weak external symbol.  On macOS,
+// dyld coalesces it with Ableton's libonnxruntime_abl.dylib (loaded first at
+// Ableton startup).  That dylib initialises api_ to null for ORT_API_VERSION
+// 18 (it supports an older API).  Any attempt to call ORT C++ constructors
+// on the main thread before the worker thread has had a chance to call
+// getSharedOrtEnv() therefore crashes at offset 0x50 (CreateSessionOptions).
+//
+// By deferring all ORT construction to the worker thread we ensure that:
+//   (a) libonnxruntime.1.18.0.dylib's own dynamic initialiser has had time
+//       to set api_ correctly, and
+//   (b) getSharedOrtEnv() writes the correct v18 api_ before any ORT C++
+//       object is constructed.
 }
 
 DescriptorAnalyser::~DescriptorAnalyser()
 {
     stopThread (3000);
 
-    if (aubioTempo       != nullptr) { del_aubio_tempo    (aubioTempo);       aubioTempo       = nullptr; }
-    if (aubioOnset       != nullptr) { del_aubio_onset    (aubioOnset);       aubioOnset       = nullptr; }
-    if (aubioSpecdesc    != nullptr) { del_aubio_specdesc (aubioSpecdesc);    aubioSpecdesc    = nullptr; }
-    if (aubioPvoc        != nullptr) { del_aubio_pvoc     (aubioPvoc);        aubioPvoc        = nullptr; }
-    if (aubioInput       != nullptr) { del_fvec (aubioInput);                 aubioInput       = nullptr; }
-    if (aubioOutput      != nullptr) { del_fvec (aubioOutput);                aubioOutput      = nullptr; }
-    if (aubioOnsetOut    != nullptr) { del_fvec (aubioOnsetOut);              aubioOnsetOut    = nullptr; }
-    if (aubioSpecdescOut != nullptr) { del_fvec (aubioSpecdescOut);           aubioSpecdescOut = nullptr; }
-    if (aubioGrain       != nullptr) { del_cvec (aubioGrain);                 aubioGrain       = nullptr; }
-    aubio_cleanup();
 }
 
 //==============================================================================
@@ -68,21 +43,14 @@ void DescriptorAnalyser::prepare (double sr)
 {
     sampleRate.store (sr, std::memory_order_release);
 
-    // Sync read positions so both BTrack and aubio start from "now" on
+    // Sync read positions so BTrack starts from "now" on
     // the first call rather than replaying stale ring data.
     const int currentPos = writePos.load (std::memory_order_acquire);
     btrackReadPos = currentPos;
-    aubioReadPos  = currentPos;
 
-    // Recreate aubio objects at the new sample rate if it changed.
-    const uint_t newSR = static_cast<uint_t> (sr);
-    if (aubioTempo    != nullptr) { del_aubio_tempo  (aubioTempo);    aubioTempo    = nullptr; }
-    if (aubioOnset    != nullptr) { del_aubio_onset  (aubioOnset);    aubioOnset    = nullptr; }
-    aubioTempo    = new_aubio_tempo  ("default", kAubioBufSize, kAubioHopSize, newSR);
-    aubioOnset    = new_aubio_onset  ("complex", kAubioBufSize, kAubioHopSize, newSR);
-    aubioOnsetTimes.clear();
-    if (aubioTempo != nullptr)
-        aubio_tempo_set_silence (aubioTempo, -60.f);
+    // Pre-size the ff_meters source so no allocation happens on the first audio block.
+    // rmsWindow = 4 blocks gives a ~50 ms RMS average at typical buffer sizes.
+    meterSource.resize (2, 4);
 
     if (!isThreadRunning())
         startThread (juce::Thread::Priority::low);
@@ -117,6 +85,10 @@ void DescriptorAnalyser::pushSamples (const juce::AudioBuffer<float>& buffer)
 
     writePos          .store (pos,  std::memory_order_release);
     dissonanceWritePos.store (dpos, std::memory_order_release);
+
+    // Feed the ff_meters source directly from the original multichannel buffer.
+    // measureBlock() is lock-free and audio-thread safe.
+    meterSource.measureBlock (buffer);
 }
 
 //==============================================================================
@@ -124,6 +96,38 @@ void DescriptorAnalyser::run()
 {
     int moodCounter = 0;
     int bpmCounter  = 0;
+
+    // ── Lazy ORT model init (worker thread, NOT main thread) ──────────────────
+    // getSharedOrtEnv() MUST be the first ORT call in this thread.  It writes
+    // the correct v18 OrtApi pointer into Ort::Global<void>::api_ (via our
+    // two-level-namespace-bound OrtGetApiBase) before any Ort::SessionOptions,
+    // Ort::Session, or other C++ ORT wrapper object is constructed.
+    //
+    // Without this explicit call, api_ remains null (Ableton's
+    // libonnxruntime_abl.dylib coalesces the weak api_ symbol at load time and
+    // sets it to null for ORT_API_VERSION 18).  Every ORT C++ constructor then
+    // crashes at a non-zero offset from null.
+    getSharedOrtEnv();
+
+#ifdef BEAT_THIS_ONNX_PATH
+    if (beatThisProcessor == nullptr)
+    {
+        try
+        {
+            beatThisProcessor = std::make_unique<BeatThis::BeatThis> (BEAT_THIS_ONNX_PATH);
+        }
+        catch (const std::exception& e)
+        {
+            DBG ("beat_this init failed on worker thread: " << e.what());
+            beatThisProcessor = nullptr;
+        }
+        catch (...)
+        {
+            DBG ("beat_this init failed on worker thread: unknown error");
+            beatThisProcessor = nullptr;
+        }
+    }
+#endif
 
     while (!threadShouldExit())
     {
@@ -133,9 +137,7 @@ void DescriptorAnalyser::run()
             break;
 
         computeDissonance();          // every 250 ms  (0.5 s window)
-        computeRMS();                 // every 250 ms  (0.5 s window, dBFS)
         processBTrack();              // every 250 ms  (continuous feed)
-        processAubio();               // every 250 ms  (continuous feed)
 
         if (++moodCounter >= 4)       // every ~1 s    (3 s window)
         {
@@ -154,6 +156,7 @@ void DescriptorAnalyser::run()
             beatThisCounter = 0;
             computeBeatThis();
         }
+
     }
 }
 
@@ -264,32 +267,6 @@ void DescriptorAnalyser::computeDissonance()
         resultCentroidMIR.store (centroidTotal   / static_cast<float> (count),
                                  std::memory_order_release);
     }
-}
-
-//==============================================================================
-void DescriptorAnalyser::computeRMS()
-{
-    const int endPos  = dissonanceWritePos.load (std::memory_order_acquire);
-    const int winSize = kDissonanceRingSize;  // 0.5 s of samples
-
-    // Linearise the circular buffer into a contiguous array.
-    std::vector<float> tmp (static_cast<size_t> (winSize));
-    for (int i = 0; i < winSize; ++i)
-    {
-        const int idx = (endPos - winSize + i + kDissonanceRingSize) % kDissonanceRingSize;
-        tmp[static_cast<size_t> (i)] = dissonanceRing[static_cast<size_t> (idx)];
-    }
-
-    // Use juce::AudioBuffer::getRMSLevel() — zero-copy wrapper over tmp.
-    float* ptr = tmp.data();
-    juce::AudioBuffer<float> buf (&ptr, 1, winSize);
-    const float rms = buf.getRMSLevel (0, 0, winSize);
-
-    // Convert to normalised dBFS: -60 dB → 0.0, 0 dB → 1.0.
-    constexpr float kFloorDb = -60.0f;
-    const float dBFS = (rms > 1.0e-6f) ? 20.0f * std::log10 (rms) : kFloorDb;
-    const float norm = juce::jlimit (0.0f, 1.0f, (dBFS - kFloorDb) / (-kFloorDb));
-    resultRMS.store (norm, std::memory_order_release);
 }
 
 //==============================================================================
@@ -425,16 +402,8 @@ void DescriptorAnalyser::processBTrack()
         // Clear beat_this immediately — its own gate only runs every ~2 s.
         resultBeatThisBPM     .store (0.0f,   std::memory_order_release);
         resultBeatThisLastBeat.store (-1.0e9, std::memory_order_release);
-        // Clear aubio immediately too.
-        resultAubioBPM         .store (0.0f,   std::memory_order_release);
-        resultAubioConfidence  .store (0.0f,   std::memory_order_release);
-        resultAubioBeatTime    .store (-1.0e9, std::memory_order_release);
-        resultAubioOnsetDensity.store (0.0f,   std::memory_order_release);
         resultCentroidMIR      .store (0.0f,   std::memory_order_release);
-        resultCentroidAubio    .store (0.0f,   std::memory_order_release);
-        aubioOnsetTimes.clear();
         btrackWasSilent  = true;
-        aubioWasSilent   = true;
         return;
     }
 
@@ -552,118 +521,3 @@ void DescriptorAnalyser::computeBeatThis()
     resultBeatThisLastBeat.store (lastBeatWallMs, std::memory_order_release);
 }
 
-//==============================================================================
-void DescriptorAnalyser::processAubio()
-{
-    if (aubioTempo == nullptr || aubioInput == nullptr || aubioOutput == nullptr)
-        return;
-
-    const double sr = sampleRate.load (std::memory_order_acquire);
-    if (sr < 1.0) return;
-
-    const int currentWritePos = writePos.load (std::memory_order_acquire);
-
-    // How many new samples since the last call?
-    int newSamples = (currentWritePos - aubioReadPos + kRingSize) % kRingSize;
-
-    // Cap at 2 s to avoid a catch-up burst after prepare() / restart.
-    const int maxSamples = static_cast<int> (sr * 2.0);
-    if (newSamples > maxSamples)
-    {
-        aubioReadPos = (currentWritePos - maxSamples + kRingSize) % kRingSize;
-        newSamples   = maxSamples;
-    }
-
-    if (newSamples < static_cast<int> (kAubioHopSize))
-        return;
-
-    // aubio_tempo expects 44100 Hz — pre-convert if needed.
-    mirlib::realVector rawSamples (static_cast<size_t> (newSamples));
-    for (int i = 0; i < newSamples; ++i)
-        rawSamples[static_cast<size_t> (i)] =
-            ring[static_cast<size_t> ((aubioReadPos + i) % kRingSize)];
-    aubioReadPos = currentWritePos;
-
-    const mirlib::realVector samples44k = resampleTo44100 (rawSamples, sr);
-
-    // Silence → sound: recreate the tempo object so aubio starts fresh.
-    if (aubioWasSilent)
-    {
-        del_aubio_tempo (aubioTempo);
-        aubioTempo = new_aubio_tempo ("default", kAubioBufSize, kAubioHopSize, 44100);
-        if (aubioTempo == nullptr) return;
-        aubio_tempo_set_silence (aubioTempo, -60.f);
-        aubioWasSilent = false;
-    }
-
-    const double nowMs    = juce::Time::getMillisecondCounterHiRes();
-    const int    total44k = static_cast<int> (samples44k.size());
-
-    double centroidSumAubio   = 0.0;
-    int    centroidCountAubio = 0;
-
-    for (int hopIdx = 0, start = 0; start + static_cast<int> (kAubioHopSize) <= total44k;
-         start += static_cast<int> (kAubioHopSize), ++hopIdx)
-    {
-        // Fill the aubio input fvec.
-        for (uint_t i = 0; i < kAubioHopSize; ++i)
-            fvec_set_sample (aubioInput, samples44k[static_cast<size_t> (start + i)], i);
-
-        // Back-dated wall-clock time for this hop's first sample.
-        const double ageMs = static_cast<double> (total44k - hopIdx * static_cast<int> (kAubioHopSize))
-                             / 44100.0 * 1000.0;
-        const double hopWallMs = nowMs - ageMs;
-
-        // ── Tempo ─────────────────────────────────────────────────────────
-        fvec_zeros (aubioOutput);
-        aubio_tempo_do (aubioTempo, aubioInput, aubioOutput);
-
-        // aubioOutput->data[0] != 0.f means a beat was detected in this hop.
-        if (fvec_get_sample (aubioOutput, 0) != 0.f)
-            resultAubioBeatTime.store (hopWallMs, std::memory_order_release);
-
-        // ── Spectral centroid (aubio) ──────────────────────────────────────
-        if (aubioPvoc != nullptr && aubioSpecdesc != nullptr && aubioSpecdescOut != nullptr)
-        {
-            aubio_pvoc_do     (aubioPvoc,     aubioInput, aubioGrain);
-            fvec_zeros        (aubioSpecdescOut);
-            aubio_specdesc_do (aubioSpecdesc, aubioGrain, aubioSpecdescOut);
-            const float bin = fvec_get_sample (aubioSpecdescOut, 0);
-            const float hz  = aubio_bintofreq (bin, 44100.0f,
-                                               static_cast<float> (kAubioBufSize));
-            centroidSumAubio  += static_cast<double> (hz);
-            ++centroidCountAubio;
-        }
-
-        // ── Onset density ─────────────────────────────────────────────────
-        if (aubioOnset != nullptr && aubioOnsetOut != nullptr)
-        {
-            fvec_zeros (aubioOnsetOut);
-            aubio_onset_do (aubioOnset, aubioInput, aubioOnsetOut);
-
-            if (fvec_get_sample (aubioOnsetOut, 0) != 0.f)
-                aubioOnsetTimes.push_back (hopWallMs);
-        }
-    }
-
-    // Prune onsets older than 2 s, then compute density (onsets per second).
-    const double cutoff = nowMs - 2000.0;
-    while (!aubioOnsetTimes.empty() && aubioOnsetTimes.front() < cutoff)
-        aubioOnsetTimes.pop_front();
-
-    resultAubioOnsetDensity.store (static_cast<float> (aubioOnsetTimes.size()) / 2.0f,
-                                   std::memory_order_release);
-
-    if (centroidCountAubio > 0)
-        resultCentroidAubio.store (static_cast<float> (centroidSumAubio / centroidCountAubio),
-                                   std::memory_order_release);
-
-    const float bpm        = aubio_tempo_get_bpm        (aubioTempo);
-    const float confidence = aubio_tempo_get_confidence (aubioTempo);
-
-    if (bpm > 0.f)
-    {
-        resultAubioBPM       .store (bpm,        std::memory_order_release);
-        resultAubioConfidence.store (confidence, std::memory_order_release);
-    }
-}
